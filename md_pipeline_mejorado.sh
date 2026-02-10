@@ -708,18 +708,21 @@ run_analysis() {
         -o rmsf_residue.xvg -res &> "$RUNDIR/logs/analysis_rmsf.log"
     log_success "RMSF: rmsf_residue.xvg"
 
-    # Puentes de hidrógeno
+    # Puentes de hidrógeno (GROMACS 2025: nueva sintaxis con -r y -t)
     echo -e "\n${YELLOW}Analizando interacciones...${NC}"
 
-    echo "Protein Protein" | run_gmx hbond -s tpr_nowat.tpr -f md_clean_nowat.xtc \
+    run_gmx hbond -s tpr_nowat.tpr -f md_clean_nowat.xtc \
+        -r 'protein' -t 'protein' \
         -num hbond_protein.xvg -tu ns &> "$RUNDIR/logs/analysis_hbond_protein.log"
     log_success "H-bonds proteína: hbond_protein.xvg"
 
-    echo "Protein r_LIG" | run_gmx hbond -s tpr_nowat.tpr -f md_clean_nowat.xtc \
+    run_gmx hbond -s tpr_nowat.tpr -f md_clean_nowat.xtc \
+        -r 'protein' -t 'resname LIG' \
         -num hbond_protein_ligand.xvg -tu ns &> "$RUNDIR/logs/analysis_hbond_prot_lig.log"
     log_success "H-bonds proteína-ligando: hbond_protein_ligand.xvg"
 
-    echo "r_LIG r_LIG" | run_gmx hbond -s tpr_nowat.tpr -f md_clean_nowat.xtc \
+    run_gmx hbond -s tpr_nowat.tpr -f md_clean_nowat.xtc \
+        -r 'resname LIG' -t 'resname LIG' \
         -num hbond_ligand.xvg -tu ns &> "$RUNDIR/logs/analysis_hbond_ligand.log" 2>/dev/null || true
     log_success "H-bonds ligando: hbond_ligand.xvg"
 
