@@ -875,15 +875,15 @@ save_checkpoint() {
     local step_name=$2
     cat > "$RUNDIR/.checkpoint" <<CKPT
 # Checkpoint generado automáticamente - NO EDITAR
-LAST_STEP=$step_num
-LAST_STEP_NAME=$step_name
-PROT=$PROT
-LIG=$LIG
-BOX_TYPE=$BOX_TYPE
-BOX_DIST=$BOX_DIST
-WATER_MODEL=$WATER_MODEL
-WATER_FILE=$WATER_FILE
-RUNDIR=$RUNDIR
+LAST_STEP="$step_num"
+LAST_STEP_NAME="$step_name"
+PROT="$PROT"
+LIG="$LIG"
+BOX_TYPE="$BOX_TYPE"
+BOX_DIST="$BOX_DIST"
+WATER_MODEL="$WATER_MODEL"
+WATER_FILE="$WATER_FILE"
+RUNDIR="$RUNDIR"
 CKPT
 }
 
