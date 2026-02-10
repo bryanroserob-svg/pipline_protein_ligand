@@ -474,22 +474,23 @@ EOF
 }
 
 #==========================================
-# HELPER: Enlazar archivos comunes desde 00_setup
+# HELPER: Copiar archivos comunes desde 00_setup
+# (cp en vez de ln -sf: symlinks no funcionan en /mnt/c/ NTFS/WSL)
 #==========================================
 link_setup_files() {
     local target_dir="$1"
     cd "$target_dir" || exit 1
 
-    ln -sf ../00_setup/topol.top .
-    ln -sf ../00_setup/index.ndx .
+    cp -f ../00_setup/topol.top .
+    cp -f ../00_setup/index.ndx .
 
-    # Enlazar archivos .itp explícitamente
+    # Copiar archivos .itp explícitamente
     for itp_file in posre.itp ligando.itp posre_ligando.itp; do
-        [ -f "../00_setup/$itp_file" ] && ln -sf "../00_setup/$itp_file" .
+        [ -f "../00_setup/$itp_file" ] && cp -f "../00_setup/$itp_file" .
     done
 
-    # Enlazar .prm si existe
-    [ -f "../00_setup/ligando.prm" ] && ln -sf "../00_setup/ligando.prm" .
+    # Copiar .prm si existe
+    [ -f "../00_setup/ligando.prm" ] && cp -f "../00_setup/ligando.prm" .
 
     # Copiar charmm36.ff si existe
     if [ -d "../00_setup/charmm36.ff" ]; then
@@ -504,7 +505,7 @@ run_minimization() {
     log_step "Ejecutando minimización de energía"
 
     link_setup_files "$RUNDIR/01_minimization"
-    ln -sf ../00_setup/system.gro .
+    cp -f ../00_setup/system.gro .
 
     run_gmx grompp -f "$RUNDIR/mdp_used/em.mdp" -c system.gro -p topol.top -n index.ndx \
         -o em.tpr -maxwarn 1 &> "$RUNDIR/logs/grompp_em.log"
@@ -523,7 +524,7 @@ run_nvt_equilibration() {
     log_step "Equilibración NVT (calentamiento) - CON RESTRICCIONES"
 
     link_setup_files "$RUNDIR/02_equilibration"
-    ln -sf ../01_minimization/em.gro .
+    cp -f ../01_minimization/em.gro .
 
     # Modificar MDP para incluir restricciones Y grupos correctos
     local nvt_mdp="nvt_temp.mdp"
@@ -599,8 +600,8 @@ run_production() {
     log_step "Iniciando simulación de producción - SIN RESTRICCIONES"
 
     link_setup_files "$RUNDIR/03_production"
-    ln -sf ../02_equilibration/npt.gro .
-    ln -sf ../02_equilibration/npt.cpt .
+    cp -f ../02_equilibration/npt.gro .
+    cp -f ../02_equilibration/npt.cpt .
 
     # Modificar MDP para grupos correctos (sin restricciones)
     local md_mdp="md_prod_temp.mdp"
@@ -631,18 +632,21 @@ run_analysis() {
 
     cd "$RUNDIR/04_analysis" || exit 1
 
-    ln -sf ../03_production/md.{tpr,xtc,trr,edr} .
-    ln -sf ../00_setup/index.ndx .
+    # Copiar archivos de producción (cp en vez de ln: symlinks no funcionan en NTFS/WSL)
+    for f in md.tpr md.xtc md.edr; do
+        [ -f "../03_production/$f" ] && cp -f "../03_production/$f" .
+    done
+    cp -f ../00_setup/index.ndx .
 
     # RMSD inicial
-    echo "Backbone Backbone" | run_gmx rms -s md.tpr -f md.trr -o rmsd_backbone_raw.xvg \
+    echo "Backbone Backbone" | run_gmx rms -s md.tpr -f md.xtc -o rmsd_backbone_raw.xvg \
         -tu ns &> "$RUNDIR/logs/analysis_rmsd_raw.log"
     log_success "RMSD inicial: rmsd_backbone_raw.xvg"
 
     # Procesamiento de trayectorias
     echo -e "\n${YELLOW}Procesando trayectorias...${NC}"
 
-    echo "Protein System" | run_gmx trjconv -s md.tpr -f md.trr -o md_clean_temp.xtc \
+    echo "Protein System" | run_gmx trjconv -s md.tpr -f md.xtc -o md_clean_temp.xtc \
         -pbc nojump -ur compact -center &> "$RUNDIR/logs/analysis_trjconv1.log"
     log_success "Trayectoria centrada: md_clean_temp.xtc"
 
