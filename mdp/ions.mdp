@@ -1,0 +1,22 @@
+; ions.mdp - Preparación para añadir iones
+; Parámetros mínimos para generar el TPR necesario para genion
+
+; PARÁMETROS DE INTEGRACIÓN
+integrator               = steep
+nsteps                   = 0
+
+; VECINOS
+cutoff-scheme            = Verlet
+nstlist                  = 1
+ns_type                  = grid
+pbc                      = xyz
+rlist                    = 1.0
+
+; ELECTROSTÁTICA
+coulombtype              = PME
+rcoulomb                 = 1.0
+pme_order                = 4
+fourierspacing           = 0.12
+
+; VAN DER WAALS
+rvdw                     = 1.0

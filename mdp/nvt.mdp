@@ -1,0 +1,55 @@
+; nvt.mdp - Equilibración NVT (calentamiento a 300K)
+; IMPORTANTE: El script añadirá automáticamente: define = -DPOSRES -DPOSRES_LIG
+
+; PARÁMETROS DE INTEGRACIÓN
+integrator               = md
+dt                       = 0.002
+nsteps                   = 50000        ; 100 ps
+comm-mode                = Linear
+nstcomm                  = 100
+
+; SALIDA
+nstxout                  = 0
+nstvout                  = 0
+nstfout                  = 0
+nstlog                   = 1000
+nstenergy                = 1000
+nstxout-compressed       = 5000
+compressed-x-grps        = System
+
+; VECINOS
+cutoff-scheme            = Verlet
+nstlist                  = 10
+ns_type                  = grid
+pbc                      = xyz
+rlist                    = 1.0
+
+; ELECTROSTÁTICA
+coulombtype              = PME
+rcoulomb                 = 1.0
+pme_order                = 4
+fourierspacing           = 0.12
+
+; VAN DER WAALS
+rvdw                     = 1.0
+DispCorr                 = EnerPres
+
+; CONTROL DE TEMPERATURA (NVT)
+tcoupl                   = V-rescale
+tc-grps                  = Protein_LIG Solvent
+tau_t                    = 0.1     0.1
+ref_t                    = 300     300
+
+; CONTROL DE PRESIÓN
+pcoupl                   = no
+
+; VELOCIDADES
+gen_vel                  = yes
+gen_temp                 = 300
+gen_seed                 = -1
+
+; RESTRICCIONES
+constraints              = h-bonds
+constraint_algorithm     = lincs
+lincs_iter               = 1
+lincs_order              = 4

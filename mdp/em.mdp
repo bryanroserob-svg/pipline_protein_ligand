@@ -1,0 +1,35 @@
+; em.mdp - Minimización de energía (steepest descent)
+
+; PARÁMETROS DE INTEGRACIÓN
+integrator               = steep
+nsteps                   = 50000
+emtol                    = 1000.0
+emstep                   = 0.01
+
+; SALIDA
+nstxout                  = 1000
+nstvout                  = 1000
+nstfout                  = 0
+nstlog                   = 100
+nstenergy                = 100
+nstxout-compressed       = 0
+
+; VECINOS
+cutoff-scheme            = Verlet
+nstlist                  = 10
+ns_type                  = grid
+pbc                      = xyz
+rlist                    = 1.0
+
+; ELECTROSTÁTICA
+coulombtype              = PME
+rcoulomb                 = 1.0
+pme_order                = 4
+fourierspacing           = 0.12
+
+; VAN DER WAALS
+rvdw                     = 1.0
+DispCorr                 = EnerPres
+
+; RESTRICCIONES
+constraints              = none
