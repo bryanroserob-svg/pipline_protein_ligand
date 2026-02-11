@@ -314,9 +314,9 @@ detect_index_groups() {
     local index_file="$RUNDIR/00_setup/index.ndx"
 
     # Listar grupos disponibles
-    local groups_output
     groups_output=$(echo q | "$GMX" make_ndx -f "$RUNDIR/03_production/md.tpr" \
-        -n "$index_file" 2>&1 || true)
+        -n "$index_file" -o /tmp/_gmxmmpbsa_tmp_index.ndx 2>&1 || true)
+    rm -f /tmp/_gmxmmpbsa_tmp_index.ndx
 
     echo "$groups_output" | grep "^ *[0-9]"
     echo ""
@@ -353,6 +353,67 @@ detect_index_groups() {
     read -r GRP_LIGAND
 
     log_success "Receptor: grupo $GRP_RECEPTOR, Ligando: grupo $GRP_LIGAND"
+}
+
+#==========================================
+# RE-CENTRADO DE TRAYECTORIA (PBC FIX)
+#==========================================
+recenter_trajectory() {
+    log_step "Re-centrando trayectoria (corrección PBC)"
+
+    local traj_in="$RUNDIR/03_production/md.xtc"
+    local tpr_in="$RUNDIR/03_production/md.tpr"
+    local index_in="$RUNDIR/00_setup/index.ndx"
+    TRAJ_CENTERED="$MMPBSA_DIR/md_center.xtc"
+
+    log_info "Esto corrige artefactos de condiciones periódicas de contorno"
+    log_info "para que el complejo proteína-ligando permanezca intacto."
+
+    # Paso 1: Hacer whole (reconstruir moléculas rotas por PBC)
+    log_info "Paso 1/3: Reconstruyendo moléculas (whole)..."
+    echo "System" | "$GMX" trjconv \
+        -f "$traj_in" \
+        -s "$tpr_in" \
+        -n "$index_in" \
+        -o "$MMPBSA_DIR/_tmp_whole.xtc" \
+        -pbc whole \
+        2>&1 | tail -5
+
+    # Paso 2: Centrar en el complejo proteína+ligando
+    # Usamos Protein_Ligand para centrar y System para output
+    log_info "Paso 2/3: Centrando complejo proteína-ligando..."
+    echo -e "Protein_Ligand\nSystem" | "$GMX" trjconv \
+        -f "$MMPBSA_DIR/_tmp_whole.xtc" \
+        -s "$tpr_in" \
+        -n "$index_in" \
+        -o "$MMPBSA_DIR/_tmp_center.xtc" \
+        -center \
+        -pbc mol \
+        -ur compact \
+        2>&1 | tail -5
+
+    # Paso 3: Corregir cluster final
+    log_info "Paso 3/3: Agrupando moléculas (cluster)..."
+    echo -e "Protein_Ligand\nSystem" | "$GMX" trjconv \
+        -f "$MMPBSA_DIR/_tmp_center.xtc" \
+        -s "$tpr_in" \
+        -n "$index_in" \
+        -o "$TRAJ_CENTERED" \
+        -pbc cluster \
+        2>&1 | tail -5
+
+    # Limpiar temporales
+    rm -f "$MMPBSA_DIR/_tmp_whole.xtc" "$MMPBSA_DIR/_tmp_center.xtc"
+
+    if [ -f "$TRAJ_CENTERED" ]; then
+        local size_mb
+        size_mb=$(du -m "$TRAJ_CENTERED" | cut -f1)
+        log_success "Trayectoria re-centrada: md_center.xtc (${size_mb} MB)"
+    else
+        log_error "Falló el re-centrado de la trayectoria"
+        log_warning "Continuando con trayectoria original (puede causar errores)"
+        TRAJ_CENTERED="$traj_in"
+    fi
 }
 
 #==========================================
@@ -405,10 +466,10 @@ EOF
         cat >> "$mmpbsa_in" <<EOF
 &decomp
 idecomp=2, dec_verbose=3,
-print_res="within 6"
+print_res="within 10"
 /
 EOF
-        log_success "Sección de descomposición añadida (residuos dentro de 6 Å)"
+        log_success "Sección de descomposición añadida (residuos dentro de 10 Å)"
     fi
 
     echo ""
@@ -437,7 +498,7 @@ run_mmpbsa() {
         -cs "$RUNDIR/03_production/md.tpr" \
         -ci "$RUNDIR/00_setup/index.ndx" \
         -cg "$GRP_RECEPTOR" "$GRP_LIGAND" \
-        -ct "$RUNDIR/03_production/md.xtc" \
+        -ct "$TRAJ_CENTERED" \
         -cp "$RUNDIR/00_setup/topol.top" \
         -o FINAL_RESULTS_MMPBSA.dat \
         -eo FINAL_RESULTS_MMPBSA.csv \
@@ -556,6 +617,7 @@ main() {
     log_success "Directorio de trabajo: $MMPBSA_DIR"
 
     generate_mmpbsa_input
+    recenter_trajectory
     run_mmpbsa
     generate_results_summary
 
