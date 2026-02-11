@@ -178,6 +178,14 @@ get_user_input() {
         5) WATER_MODEL="tip5p"; WATER_FILE="tip5p.gro" ;;
         *) WATER_MODEL="tip3p"; WATER_FILE="spc216.gro" ;;
     esac
+
+    # Tiempo de producción
+    echo -e "\nTiempo de simulación de producción en nanosegundos [default: 10]:"
+    read -r PROD_NS
+    PROD_NS=${PROD_NS:-10}
+    # dt = 0.002 ps → 500000 steps por ns
+    PROD_NSTEPS=$((PROD_NS * 500000))
+    log_info "Producción: $PROD_NS ns ($PROD_NSTEPS steps)"
 }
 
 #==========================================
@@ -607,12 +615,15 @@ run_production() {
     local md_mdp="md_prod_temp.mdp"
     cp "$RUNDIR/mdp_used/md_prod.mdp" "$md_mdp"
 
+    # Actualizar nsteps según el tiempo elegido por el usuario
+    sed -i "s/^nsteps.*/nsteps                   = ${PROD_NSTEPS}      ; ${PROD_NS} ns/" "$md_mdp"
+
     # Reemplazar grupos de temperatura
     sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$md_mdp"
     sed -i 's/^tau_t.*/tau_t                    = 0.1     0.1/' "$md_mdp"
     sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$md_mdp"
 
-    log_success "Grupos de termostato actualizados en md_prod_temp.mdp"
+    log_success "Producción configurada: $PROD_NS ns ($PROD_NSTEPS steps)"
 
     run_gmx grompp -f "$md_mdp" -c npt.gro -t npt.cpt -p topol.top \
         -n index.ndx -o md.tpr -maxwarn 1 &> "$RUNDIR/logs/grompp_md.log"

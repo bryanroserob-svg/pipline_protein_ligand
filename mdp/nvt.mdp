@@ -20,7 +20,6 @@ compressed-x-grps        = System
 ; VECINOS
 cutoff-scheme            = Verlet
 nstlist                  = 10
-ns_type                  = grid
 pbc                      = xyz
 rlist                    = 1.0
 

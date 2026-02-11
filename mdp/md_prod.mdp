@@ -20,7 +20,6 @@ compressed-x-grps        = System
 ; VECINOS
 cutoff-scheme            = Verlet
 nstlist                  = 10
-ns_type                  = grid
 pbc                      = xyz
 rlist                    = 1.0
 
@@ -56,8 +55,6 @@ constraint_algorithm     = lincs
 lincs_iter               = 1
 lincs_order              = 4
 
-; CONDICIONES PERIÓDICAS
-pbc                      = xyz
 
 ; OPCIONES DE ENERGÍA
 ; FREE ENERGY CALCULATIONS (opcional, comentado)
