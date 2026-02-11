@@ -444,7 +444,7 @@ neutralize_system() {
     cd "$RUNDIR/00_setup" || exit 1
 
     if ! run_gmx grompp -f "$RUNDIR/mdp_used/ions.mdp" -c solv.gro -p topol.top -o ions.tpr \
-        -maxwarn 1 > "$RUNDIR/logs/grompp_ions.log" 2>&1; then
+        -maxwarn 2 > "$RUNDIR/logs/grompp_ions.log" 2>&1; then
         log_error "grompp falló al generar ions.tpr"
         cat "$RUNDIR/logs/grompp_ions.log"
         exit 1
