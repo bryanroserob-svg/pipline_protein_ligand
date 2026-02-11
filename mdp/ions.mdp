@@ -9,13 +9,13 @@ nsteps                   = 0
 cutoff-scheme            = Verlet
 nstlist                  = 1
 pbc                      = xyz
-rlist                    = 1.0
+rlist                    = 1.2
 
 ; ELECTROSTÁTICA
 coulombtype              = PME
-rcoulomb                 = 1.0
+rcoulomb                 = 1.2
 pme_order                = 4
 fourierspacing           = 0.12
 
 ; VAN DER WAALS
-rvdw                     = 1.0
+rvdw                     = 1.2

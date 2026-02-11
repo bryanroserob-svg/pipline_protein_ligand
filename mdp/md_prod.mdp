@@ -1,10 +1,11 @@
-; md_prod.mdp - Simulación de producción (10 ns)
+; md_prod.mdp - Simulación de producción
+; Compatible con CHARMM36 / CGenFF
 ; SIN RESTRICCIONES POSICIONALES
 
 ; PARÁMETROS DE INTEGRACIÓN
 integrator               = md
 dt                       = 0.002
-nsteps                   = 5000000      ; 10 ns (ajusta según necesites)
+nsteps                   = 5000000      ; 10 ns (el script lo ajusta según elección del usuario)
 comm-mode                = Linear
 nstcomm                  = 100
 
@@ -17,45 +18,43 @@ nstenergy                = 5000         ; Energías cada 10 ps
 nstxout-compressed       = 5000         ; Trayectoria comprimida cada 10 ps
 compressed-x-grps        = System
 
+; ENLACES
+continuation             = yes
+constraint_algorithm     = lincs
+constraints              = h-bonds
+lincs_iter               = 1
+lincs_order              = 4
+
 ; VECINOS
 cutoff-scheme            = Verlet
-nstlist                  = 10
+nstlist                  = 20
 pbc                      = xyz
-rlist                    = 1.0
 
 ; ELECTROSTÁTICA
 coulombtype              = PME
-rcoulomb                 = 1.0
+rcoulomb                 = 1.2
 pme_order                = 4
-fourierspacing           = 0.12
+fourierspacing           = 0.16
 
-; VAN DER WAALS
-rvdw                     = 1.0
-DispCorr                 = EnerPres
+; VAN DER WAALS (CHARMM36: force-switch)
+vdwtype                  = cutoff
+vdw-modifier             = force-switch
+rvdw-switch              = 1.0
+rvdw                     = 1.2
+DispCorr                 = no
 
 ; CONTROL DE TEMPERATURA
 tcoupl                   = V-rescale
-tc-grps                  = Protein_LIG Solvent
-tau_t                    = 0.1     0.1
+tc-grps                  = Protein_Ligand Solvent
+tau_t                    = 1.0     1.0
 ref_t                    = 300     300
 
 ; CONTROL DE PRESIÓN
 pcoupl                   = Parrinello-Rahman
 pcoupltype               = isotropic
-tau_p                    = 2.0
+tau_p                    = 5.0
 ref_p                    = 1.0
 compressibility          = 4.5e-5
 
 ; VELOCIDADES
 gen_vel                  = no
-
-; RESTRICCIONES
-constraints              = h-bonds
-constraint_algorithm     = lincs
-lincs_iter               = 1
-lincs_order              = 4
-
-
-; OPCIONES DE ENERGÍA
-; FREE ENERGY CALCULATIONS (opcional, comentado)
-; free-energy              = no
