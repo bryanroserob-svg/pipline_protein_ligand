@@ -66,6 +66,8 @@ El script preguntará interactivamente:
 - Tipo de caja (cúbica, triclínica, dodecaedro, octaedro)
 - Distancia a bordes (nm)
 - Modelo de agua (TIP3P, SPC, SPC/E, TIP4P, TIP5P)
+- Concentración iónica NaCl (0 = solo neutralizar, 0.15 = fisiológica)
+- Tiempo de producción (ns)
 
 **Flujo del pipeline (13 pasos con checkpoint automático):**
 

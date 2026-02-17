@@ -179,6 +179,12 @@ get_user_input() {
         *) WATER_MODEL="tip3p"; WATER_FILE="spc216.gro" ;;
     esac
 
+    # Concentración iónica
+    echo -e "\nConcentración de iones NaCl (mol/L) [default: 0]:"
+    echo -e "${CYAN}  (0 = solo neutralizar, 0.15 = fisiológica)${NC}"
+    read -r ION_CONC
+    ION_CONC=${ION_CONC:-0}
+
     # Tiempo de producción
     echo -e "\nTiempo de simulación de producción en nanosegundos [default: 10]:"
     read -r PROD_NS
@@ -214,6 +220,7 @@ validate_mdp_files() {
     log_success "Tipo de caja: $BOX_TYPE"
     log_success "Distancia a bordes: $BOX_DIST nm"
     log_success "Modelo de agua: $WATER_MODEL"
+    log_success "Concentración iónica: $ION_CONC M"
     log_success "Archivos MDP validados"
 }
 
@@ -439,7 +446,7 @@ solvate_system() {
 # NEUTRALIZACIÓN
 #==========================================
 neutralize_system() {
-    log_step "Añadiendo iones para neutralizar el sistema"
+    log_step "Añadiendo iones (concentración: $ION_CONC M NaCl)"
 
     cd "$RUNDIR/00_setup" || exit 1
 
@@ -450,10 +457,16 @@ neutralize_system() {
         exit 1
     fi
 
-    echo "SOL" | run_gmx genion -s ions.tpr -o system.gro -p topol.top -neutral \
-        &> "$RUNDIR/logs/genion.log"
-
-    log_success "Sistema neutralizado"
+    if (( $(echo "$ION_CONC > 0" | bc -l) )); then
+        echo "SOL" | run_gmx genion -s ions.tpr -o system.gro -p topol.top \
+            -pname NA -nname CL -neutral -conc "$ION_CONC" \
+            &> "$RUNDIR/logs/genion.log"
+        log_success "Sistema neutralizado con $ION_CONC M NaCl"
+    else
+        echo "SOL" | run_gmx genion -s ions.tpr -o system.gro -p topol.top -neutral \
+            &> "$RUNDIR/logs/genion.log"
+        log_success "Sistema neutralizado (solo contraiones)"
+    fi
 }
 
 #==========================================
