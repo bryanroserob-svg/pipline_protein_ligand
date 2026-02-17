@@ -30,6 +30,9 @@ readonly BASE_MDP=mdp
 readonly WORKDIR=MD_RUN
 readonly INITIAL_DIR="$(pwd)"
 
+# Flag para indicar si el force field es local (copiado) o nativo de GROMACS
+FF_IS_LOCAL=false
+
 #==========================================
 # COLORES PARA OUTPUT
 #==========================================
@@ -89,6 +92,43 @@ run_gmx() {
 }
 
 #==========================================
+# ADAPTAR MDP SEGÚN FORCE FIELD SELECCIONADO
+# CHARMM36 usa force-switch, otros FF no
+#==========================================
+adapt_mdp_for_forcefield() {
+    local mdp_dir="$1"
+
+    # Detectar si es CHARMM desde FF_DIR (ej: charmm36-jul2022.ff, charmm27.ff)
+    local is_charmm=false
+    case "${FF_DIR:-}" in
+        charmm*) is_charmm=true ;;
+    esac
+
+    if [ "$is_charmm" = true ]; then
+        log_info "Force field CHARMM detectado: MDP sin modificaciones (force-switch correcto)"
+        return 0
+    fi
+
+    log_step "Adaptando archivos MDP para force field ${FF_DIR:-desconocido} (no-CHARMM)"
+
+    for mdp_file in "$mdp_dir"/*.mdp; do
+        [ -f "$mdp_file" ] || continue
+
+        # Reemplazar vdw-modifier: force-switch → Potential-shift
+        if grep -q 'force-switch' "$mdp_file"; then
+            sed -i 's/vdw-modifier.*=.*force-switch/vdw-modifier             = Potential-shift/' "$mdp_file"
+            # Eliminar rvdw-switch (no se usa con Potential-shift)
+            sed -i '/^rvdw-switch/d' "$mdp_file"
+            # Para AMBER/GROMOS/OPLS: DispCorr = EnerPres
+            sed -i 's/^DispCorr.*=.*no/DispCorr                 = EnerPres/' "$mdp_file"
+            # Actualizar comentario
+            sed -i 's/; VAN DER WAALS (CHARMM36: force-switch)/; VAN DER WAALS (adaptado para '"${FF_DIR:-}"')/' "$mdp_file"
+            log_success "$(basename "$mdp_file") adaptado: Potential-shift + DispCorr=EnerPres"
+        fi
+    done
+}
+
+#==========================================
 # TRAP PARA LIMPIEZA EN CASO DE ERROR
 #==========================================
 cleanup_on_error() {
@@ -116,37 +156,244 @@ validate_dependencies() {
 get_user_input() {
     echo -e "${BLUE}=========================================${NC}"
     echo -e "${BLUE}  SIMULACIÓN DE DINÁMICA MOLECULAR${NC}"
+    echo -e "${BLUE}  (Proteína + Ligando)${NC}"
     echo -e "${BLUE}=========================================${NC}\n"
 
-    # Proteína
-    while true; do
-        echo "Nombre de la proteína (carpeta en proteinas/):"
-        read -r PROT
-        if [ -d "$BASE_PROT/$PROT" ]; then
-            break
-        else
-            log_error "Proteína '$PROT' no encontrada en $BASE_PROT/"
+    # ========================================
+    # Selección de proteína (auto-detección)
+    # ========================================
+    echo -e "\n${CYAN}═══════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  SELECCIÓN DE PROTEÍNA${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════${NC}\n"
+
+    local PROT_DIRS=()
+    local PROT_PDBS=()
+
+    if [ ! -d "$INITIAL_DIR/$BASE_PROT" ]; then
+        log_error "No se encontró la carpeta '$BASE_PROT/' en el directorio actual"
+        log_info "Crea la carpeta y coloca subcarpetas con archivos .pdb dentro"
+        exit 1
+    fi
+
+    for prot_dir in "$INITIAL_DIR/$BASE_PROT"/*/; do
+        if [ -d "$prot_dir" ]; then
+            local pdb_found
+            pdb_found=$(find "$prot_dir" -maxdepth 1 -name "*.pdb" -type f | head -1)
+            if [ -n "$pdb_found" ]; then
+                local dir_name
+                dir_name=$(basename "$prot_dir")
+                local pdb_name
+                pdb_name=$(basename "$pdb_found")
+                PROT_DIRS+=("$dir_name")
+                PROT_PDBS+=("$pdb_name")
+            fi
         fi
     done
 
-    # Ligando
-    while true; do
-        echo -e "\nNombre del ligando (carpeta en ligandos/):"
-        read -r LIG
-        if [ -d "$BASE_LIG/$LIG" ]; then
-            break
-        else
-            log_error "Ligando '$LIG' no encontrado en $BASE_LIG/"
+    if [ ${#PROT_DIRS[@]} -eq 0 ]; then
+        log_error "No se encontraron proteínas (carpetas con .pdb) en '$BASE_PROT/'"
+        exit 1
+    fi
+
+    echo "  Proteínas disponibles en $BASE_PROT/:"
+    echo ""
+    for i in "${!PROT_DIRS[@]}"; do
+        local idx=$((i + 1))
+        echo "   ${idx}) ${PROT_DIRS[$i]}  (${PROT_PDBS[$i]})"
+    done
+    echo ""
+    echo -e "  ${YELLOW}Seleccione la proteína [1-${#PROT_DIRS[@]}]:${NC}"
+    read -r PROT_CHOICE
+
+    if [[ "$PROT_CHOICE" =~ ^[0-9]+$ ]] && [ "$PROT_CHOICE" -ge 1 ] && [ "$PROT_CHOICE" -le ${#PROT_DIRS[@]} ]; then
+        local sel=$((PROT_CHOICE - 1))
+        PROT="${PROT_DIRS[$sel]}"
+    else
+        log_error "Selección inválida"
+        exit 1
+    fi
+
+    log_success "Proteína seleccionada: $PROT"
+
+    # ========================================
+    # Selección de ligando (auto-detección)
+    # ========================================
+    echo -e "\n${CYAN}═══════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  SELECCIÓN DE LIGANDO${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════${NC}\n"
+
+    local LIG_DIRS=()
+    local LIG_FILES=()
+
+    if [ ! -d "$INITIAL_DIR/$BASE_LIG" ]; then
+        log_error "No se encontró la carpeta '$BASE_LIG/' en el directorio actual"
+        log_info "Crea la carpeta y coloca subcarpetas con archivos ligando.itp y ligando.gro dentro"
+        exit 1
+    fi
+
+    for lig_dir in "$INITIAL_DIR/$BASE_LIG"/*/; do
+        if [ -d "$lig_dir" ]; then
+            # Buscar ligando.itp y ligando.gro
+            if [ -f "$lig_dir/ligando.itp" ] && [ -f "$lig_dir/ligando.gro" ]; then
+                local dir_name
+                dir_name=$(basename "$lig_dir")
+                local extras=""
+                [ -f "$lig_dir/ligando.prm" ] && extras=" +prm"
+                [ -f "$lig_dir/ligando.pdb" ] && extras="${extras} +pdb"
+                LIG_DIRS+=("$dir_name")
+                LIG_FILES+=("ligando.itp, ligando.gro${extras}")
+            fi
         fi
     done
 
+    if [ ${#LIG_DIRS[@]} -eq 0 ]; then
+        log_error "No se encontraron ligandos (carpetas con ligando.itp + ligando.gro) en '$BASE_LIG/'"
+        exit 1
+    fi
+
+    echo "  Ligandos disponibles en $BASE_LIG/:"
+    echo ""
+    for i in "${!LIG_DIRS[@]}"; do
+        local idx=$((i + 1))
+        echo "   ${idx}) ${LIG_DIRS[$i]}  (${LIG_FILES[$i]})"
+    done
+    echo ""
+    echo -e "  ${YELLOW}Seleccione el ligando [1-${#LIG_DIRS[@]}]:${NC}"
+    read -r LIG_CHOICE
+
+    if [[ "$LIG_CHOICE" =~ ^[0-9]+$ ]] && [ "$LIG_CHOICE" -ge 1 ] && [ "$LIG_CHOICE" -le ${#LIG_DIRS[@]} ]; then
+        local sel=$((LIG_CHOICE - 1))
+        LIG="${LIG_DIRS[$sel]}"
+    else
+        log_error "Selección inválida"
+        exit 1
+    fi
+
+    log_success "Ligando seleccionado: $LIG"
+
+    # ========================================
+    # Selección de Force Field (auto-detección)
+    # ========================================
+    echo -e "\n${CYAN}═══════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  SELECCIÓN DE CAMPO DE FUERZA${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════${NC}\n"
+
+    # Detectar force fields locales (*.ff en el directorio raíz)
+    local LOCAL_FF_DIRS=()
+    local LOCAL_FF_NAMES=()
+
+    for ff_dir in "$INITIAL_DIR"/*.ff; do
+        if [ -d "$ff_dir" ]; then
+            local dir_basename
+            dir_basename=$(basename "$ff_dir")
+            local ff_desc="$dir_basename"
+            if [ -f "$ff_dir/forcefield.doc" ]; then
+                ff_desc=$(grep -m1 '[^ ]' "$ff_dir/forcefield.doc" 2>/dev/null || echo "$dir_basename")
+            fi
+            LOCAL_FF_DIRS+=("$dir_basename")
+            LOCAL_FF_NAMES+=("$ff_desc")
+        fi
+    done
+
+    # Detectar force fields nativos de GROMACS
+    local NATIVE_FF_DIRS=()
+    local NATIVE_FF_NAMES=()
+    local gmx_topdir=""
+    local gmx_datadir=""
+    gmx_datadir=$($GMX -h 2>&1 | grep -oP 'Data prefix:\s*\K\S+' || true)
+    if [ -n "$gmx_datadir" ]; then
+        gmx_topdir="$gmx_datadir/share/gromacs/top"
+    elif [ -d "/usr/local/gromacs/share/gromacs/top" ]; then
+        gmx_topdir="/usr/local/gromacs/share/gromacs/top"
+    elif [ -d "/usr/share/gromacs/top" ]; then
+        gmx_topdir="/usr/share/gromacs/top"
+    fi
+
+    if [ -n "$gmx_topdir" ] && [ -d "$gmx_topdir" ]; then
+        for ff_dir in "$gmx_topdir"/*.ff; do
+            if [ -d "$ff_dir" ]; then
+                local dir_basename
+                dir_basename=$(basename "$ff_dir")
+                # Evitar duplicados con los locales
+                local is_dup=false
+                for local_ff in "${LOCAL_FF_DIRS[@]+"${LOCAL_FF_DIRS[@]}"}"; do
+                    [ "$local_ff" = "$dir_basename" ] && is_dup=true && break
+                done
+                [ "$is_dup" = true ] && continue
+
+                local ff_desc="$dir_basename"
+                if [ -f "$ff_dir/forcefield.doc" ]; then
+                    ff_desc=$(grep -m1 '[^ ]' "$ff_dir/forcefield.doc" 2>/dev/null || echo "$dir_basename")
+                fi
+                NATIVE_FF_DIRS+=("$dir_basename")
+                NATIVE_FF_NAMES+=("$ff_desc")
+            fi
+        done
+    fi
+
+    local total_ff=$(( ${#LOCAL_FF_DIRS[@]} + ${#NATIVE_FF_DIRS[@]} ))
+
+    if [ "$total_ff" -eq 0 ]; then
+        log_error "No se encontraron force fields (ni locales ni de GROMACS)"
+        exit 1
+    fi
+
+    # Mostrar force fields locales
+    local ff_idx=1
+    if [ ${#LOCAL_FF_DIRS[@]} -gt 0 ]; then
+        echo -e "  ${GREEN}── Force fields locales (descargados) ──${NC}"
+        for i in "${!LOCAL_FF_DIRS[@]}"; do
+            echo "   ${ff_idx}) ${LOCAL_FF_NAMES[$i]}"
+            echo -e "      ${CYAN}[${LOCAL_FF_DIRS[$i]}]${NC}"
+            ff_idx=$((ff_idx + 1))
+        done
+        echo ""
+    fi
+
+    # Mostrar force fields nativos
+    if [ ${#NATIVE_FF_DIRS[@]} -gt 0 ]; then
+        echo -e "  ${YELLOW}── Force fields nativos de GROMACS ──${NC}"
+        for i in "${!NATIVE_FF_DIRS[@]}"; do
+            echo "   ${ff_idx}) ${NATIVE_FF_NAMES[$i]}"
+            echo -e "      ${CYAN}[${NATIVE_FF_DIRS[$i]}]${NC}"
+            ff_idx=$((ff_idx + 1))
+        done
+        echo ""
+    fi
+
+    echo -e "  ${YELLOW}Seleccione el force field [1-${total_ff}]:${NC}"
+    read -r FF_CHOICE
+
+    if [[ "$FF_CHOICE" =~ ^[0-9]+$ ]] && [ "$FF_CHOICE" -ge 1 ] && [ "$FF_CHOICE" -le "$total_ff" ]; then
+        if [ "$FF_CHOICE" -le ${#LOCAL_FF_DIRS[@]} ]; then
+            local sel=$((FF_CHOICE - 1))
+            SELECTED_FF_DIR="${LOCAL_FF_DIRS[$sel]}"
+            SELECTED_FF_LOCAL=true
+        else
+            local sel=$((FF_CHOICE - ${#LOCAL_FF_DIRS[@]} - 1))
+            SELECTED_FF_DIR="${NATIVE_FF_DIRS[$sel]}"
+            SELECTED_FF_LOCAL=false
+        fi
+    else
+        log_error "Selección inválida"
+        exit 1
+    fi
+
+    log_success "Force field seleccionado: $SELECTED_FF_DIR (local=$SELECTED_FF_LOCAL)"
+
+    # ========================================
     # Tipo de caja
-    echo -e "\nTipo de caja de simulación:"
-    echo "  1) cubic       - Caja cúbica (más volumen, más moléculas de agua)"
-    echo "  2) triclinic   - Romboedro truncado (~71% del volumen de cubic)"
-    echo "  3) dodecahedron - Dodecaedro rómbico (~71%, recomendado)"
-    echo "  4) octahedron  - Octaedro truncado (~77% del volumen de cubic)"
-    echo -e "\nSeleccione el tipo de caja [1-4] (default: 3 dodecahedron):"
+    # ========================================
+    echo -e "\n${CYAN}═══════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  PARÁMETROS DE SIMULACIÓN${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════${NC}\n"
+
+    echo "  Tipo de caja de simulación:"
+    echo "   1) cubic       - Caja cúbica (más volumen, más moléculas de agua)"
+    echo "   2) triclinic   - Romboedro truncado (~71% del volumen de cubic)"
+    echo "   3) dodecahedron - Dodecaedro rómbico (~71%, recomendado)"
+    echo "   4) octahedron  - Octaedro truncado (~77% del volumen de cubic)"
+    echo -e "\n  ${YELLOW}Seleccione el tipo de caja [1-4] (default: 3 dodecahedron):${NC}"
     read -r BOX_CHOICE
 
     case $BOX_CHOICE in
@@ -157,18 +404,18 @@ get_user_input() {
     esac
 
     # Distancia a bordes
-    echo -e "\nDistancia mínima a los bordes de la caja (nm) [default: 1.2]:"
+    echo -e "\n  Distancia mínima a los bordes de la caja (nm) [default: 1.2]:"
     read -r BOX_DIST
     BOX_DIST=${BOX_DIST:-1.2}
 
     # Modelo de agua
-    echo -e "\nModelo de agua a utilizar:"
-    echo "  1) tip3p  - TIP3P (rápido, recomendado para la mayoría)"
-    echo "  2) spc    - SPC (simple point charge)"
-    echo "  3) spce   - SPC/E (extended simple point charge)"
-    echo "  4) tip4p  - TIP4P (4 sitios)"
-    echo "  5) tip5p  - TIP5P (5 sitios, más preciso pero más lento)"
-    echo -e "\nSeleccione el modelo de agua [1-5] (default: 1):"
+    echo -e "\n  Modelo de agua a utilizar:"
+    echo "   1) tip3p  - TIP3P (rápido, recomendado para la mayoría)"
+    echo "   2) spc    - SPC (simple point charge)"
+    echo "   3) spce   - SPC/E (extended simple point charge)"
+    echo "   4) tip4p  - TIP4P (4 sitios)"
+    echo "   5) tip5p  - TIP5P (5 sitios, más preciso pero más lento)"
+    echo -e "\n  ${YELLOW}Seleccione el modelo de agua [1-5] (default: 1):${NC}"
     read -r WATER_CHOICE
 
     case $WATER_CHOICE in
@@ -180,13 +427,13 @@ get_user_input() {
     esac
 
     # Concentración iónica
-    echo -e "\nConcentración de iones NaCl (mol/L) [default: 0]:"
-    echo -e "${CYAN}  (0 = solo neutralizar, 0.15 = fisiológica)${NC}"
+    echo -e "\n  Concentración de iones NaCl (mol/L) [default: 0]:"
+    echo -e "  ${CYAN}(0 = solo neutralizar, 0.15 = fisiológica)${NC}"
     read -r ION_CONC
     ION_CONC=${ION_CONC:-0}
 
     # Tiempo de producción
-    echo -e "\nTiempo de simulación de producción en nanosegundos [default: 10]:"
+    echo -e "\n  Tiempo de simulación de producción en nanosegundos [default: 10]:"
     read -r PROD_NS
     PROD_NS=${PROD_NS:-10}
     # dt = 0.002 ps → 500000 steps por ns
@@ -280,25 +527,35 @@ setup_initial_files() {
         log_success "Archivo ligando.prm encontrado (parámetros CHARMM)"
     fi
 
-    # Auto-detectar qué force field se usó en topol.top y copiar ese
-    FF_DIR=$(grep -oP '"\./\K[^/]+\.ff' topol.top | head -1)
-    if [ -z "$FF_DIR" ]; then
-        # Fallback: buscar sin ./
-        FF_DIR=$(grep -oP '#include\s+"\K[^/]+\.ff' topol.top | head -1)
-    fi
+    # Usar el force field seleccionado por el usuario
+    FF_DIR="${SELECTED_FF_DIR:-}"
+    FF_IS_LOCAL="${SELECTED_FF_LOCAL:-false}"
 
-    if [ -n "$FF_DIR" ] && [ -d "$INITIAL_DIR/$FF_DIR" ]; then
-        log_step "Force field detectado en topol.top: $FF_DIR"
-        cp -r "$INITIAL_DIR/$FF_DIR" .
-        log_success "$FF_DIR copiado a 00_setup/"
-    elif [ -n "$FF_DIR" ]; then
-        log_error "topol.top referencia '$FF_DIR' pero no se encontró en $INITIAL_DIR/"
-        exit 1
+    if [ -n "$FF_DIR" ]; then
+        if [ "$FF_IS_LOCAL" = true ] && [ -d "$INITIAL_DIR/$FF_DIR" ]; then
+            log_step "Copiando force field local: $FF_DIR"
+            cp -r "$INITIAL_DIR/$FF_DIR" .
+            log_success "$FF_DIR copiado a 00_setup/"
+        else
+            log_success "Force field nativo de GROMACS: $FF_DIR"
+        fi
     else
-        log_warning "No se detectó force field en topol.top, saltando copia"
+        log_warning "No se seleccionó force field, usando el referenciado en topol.top"
+        # Fallback: detectar desde topol.top
+        FF_DIR=$(grep -oP '"\.\/\K[^/]+\.ff' topol.top | head -1)
+        if [ -z "$FF_DIR" ]; then
+            FF_DIR=$(grep -oP '#include\s+"\K[^/]+\.ff' topol.top | head -1)
+        fi
+        if [ -n "$FF_DIR" ] && [ -d "$INITIAL_DIR/$FF_DIR" ]; then
+            cp -r "$INITIAL_DIR/$FF_DIR" .
+            FF_IS_LOCAL=true
+        fi
     fi
 
     log_success "Archivos copiados a 00_setup/"
+
+    # Adaptar MDPs si el force field no es CHARMM
+    adapt_mdp_for_forcefield "$RUNDIR/mdp_used"
 }
 
 #==========================================
@@ -524,10 +781,12 @@ link_setup_files() {
     # Copiar .prm si existe
     [ -f "../00_setup/ligando.prm" ] && cp -f "../00_setup/ligando.prm" .
 
-    # Copiar el force field detectado (charmm36.ff, charmm36-jul2022.ff, etc.)
-    for ff_candidate in ../00_setup/*.ff; do
-        [ -d "$ff_candidate" ] && cp -r "$ff_candidate" .
-    done
+    # Copiar el force field solo si es local (no nativo de GROMACS)
+    if [ "$FF_IS_LOCAL" = true ]; then
+        for ff_candidate in ../00_setup/*.ff; do
+            [ -d "$ff_candidate" ] && cp -r "$ff_candidate" .
+        done
+    fi
 }
 
 #==========================================
