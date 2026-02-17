@@ -108,8 +108,21 @@ python3 plot_analysis.py                          # Menú interactivo
 python3 plot_analysis.py MD_RUN/mi_corrida/       # Directo
 ```
 
-Genera `REPORT_MD.pdf` con ~17 gráficas organizadas por secciones:
-- Minimización, Equilibración, Estabilidad, Ligando, Flexibilidad, Interacciones, PCA
+Genera `REPORT_MD.pdf` con ~20 gráficas organizadas por secciones:
+
+| Sección | Gráficas incluidas |
+|---|---|
+| Minimización | Energía potencial |
+| Equilibración | Temperatura (NVT), Presión (NPT), Densidad (NPT) |
+| Estabilidad Estructural | RMSD backbone, RMSD proteína, Radio de giro |
+| Estabilidad del Ligando | RMSD ligando, Distancia mínima prot-lig |
+| Flexibilidad | RMSF por residuo |
+| Propiedades Superficiales | SASA |
+| Interacciones | H-bonds intra-proteína, H-bonds prot-lig, Contactos prot-lig |
+| PCA | Eigenvalores, PC1, PC2 |
+| Matriz RMSD | Heatmap RMSD vs RMSD |
+| Free Energy Landscape | FEL (inversión de Boltzmann sobre PC1 vs PC2) |
+| Correlación Dinámica | DCCM (Dynamic Cross-Correlation Matrix) |
 
 ### 4. Energía libre de unión (MM-PB/GBSA)
 
@@ -139,9 +152,13 @@ Opciones de cálculo:
 | `rmsf_residue.xvg` | Flexibilidad por residuo |
 | `mindist_prot_lig.xvg` | Distancia mínima prot-lig (disociación) |
 | `sasa_protein.xvg` | Superficie accesible al solvente |
+| `hbond_protein.xvg` | Puentes de H intra-proteína |
 | `hbond_protein_ligand.xvg` | Puentes de H proteína↔ligando |
+| `hbond_ligand.xvg` | Puentes de H intra-ligando |
 | `eigenval.xvg` | Eigenvalores del PCA |
 | `proj_pc1.xvg` / `proj_pc2.xvg` | Componentes principales |
+| `proj_2d.xvg` | Proyección 2D (PC1 vs PC2) para FEL |
+| `ca_positions.xvg` | Coordenadas Cα para DCCM |
 | `clusters.pdb` | Conformaciones representativas |
 | `rmsd_matrix.xpm` | Mapa de calor RMSD vs RMSD |
 | `contacts_prot_lig.xvg` | Contactos por residuo |
@@ -194,6 +211,8 @@ gmx_MMPBSA --help                            # Verificar
 - **`-maxwarn 1`**: Se permite máximo 1 warning en grompp
 - **Checkpoint**: Se guarda en `$RUNDIR/.checkpoint` después de cada paso exitoso
 - **Conda**: `run_mmpbsa.sh` detecta y activa automáticamente entornos con "mmpbsa" en el nombre
+- **FEL**: Free Energy Landscape calculado por inversión de Boltzmann sobre PC1 vs PC2
+- **DCCM**: Dynamic Cross-Correlation Matrix calculada desde coordenadas Cα
 
 ## 📄 Licencia
 
