@@ -280,11 +280,22 @@ setup_initial_files() {
         log_success "Archivo ligando.prm encontrado (parámetros CHARMM)"
     fi
 
-    # Copiar CHARMM36.ff si existe
-    if [ -d "$INITIAL_DIR/charmm36.ff" ]; then
-        log_step "Copiando CHARMM36.ff a 00_setup"
-        cp -r "$INITIAL_DIR/charmm36.ff" .
-        log_success "CHARMM36.ff copiado a 00_setup/"
+    # Auto-detectar qué force field se usó en topol.top y copiar ese
+    FF_DIR=$(grep -oP '"\./\K[^/]+\.ff' topol.top | head -1)
+    if [ -z "$FF_DIR" ]; then
+        # Fallback: buscar sin ./
+        FF_DIR=$(grep -oP '#include\s+"\K[^/]+\.ff' topol.top | head -1)
+    fi
+
+    if [ -n "$FF_DIR" ] && [ -d "$INITIAL_DIR/$FF_DIR" ]; then
+        log_step "Force field detectado en topol.top: $FF_DIR"
+        cp -r "$INITIAL_DIR/$FF_DIR" .
+        log_success "$FF_DIR copiado a 00_setup/"
+    elif [ -n "$FF_DIR" ]; then
+        log_error "topol.top referencia '$FF_DIR' pero no se encontró en $INITIAL_DIR/"
+        exit 1
+    else
+        log_warning "No se detectó force field en topol.top, saltando copia"
     fi
 
     log_success "Archivos copiados a 00_setup/"
@@ -513,10 +524,10 @@ link_setup_files() {
     # Copiar .prm si existe
     [ -f "../00_setup/ligando.prm" ] && cp -f "../00_setup/ligando.prm" .
 
-    # Copiar charmm36.ff si existe
-    if [ -d "../00_setup/charmm36.ff" ]; then
-        cp -r ../00_setup/charmm36.ff .
-    fi
+    # Copiar el force field detectado (charmm36.ff, charmm36-jul2022.ff, etc.)
+    for ff_candidate in ../00_setup/*.ff; do
+        [ -d "$ff_candidate" ] && cp -r "$ff_candidate" .
+    done
 }
 
 #==========================================
