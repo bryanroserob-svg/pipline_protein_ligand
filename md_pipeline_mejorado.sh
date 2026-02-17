@@ -1073,6 +1073,11 @@ run_analysis() {
         -first 1 -last 2 &> "$RUNDIR/logs/analysis_2d.log"
     log_success "Proyección 2D (PC1 vs PC2): proj_2d.xvg"
 
+    # 4c. DCCM: Extraer coordenadas C-alpha para mapa de correlación dinámica
+    echo "C-alpha" | run_gmx traj -s tpr_nowat.tpr -f md_clean_nowat.xtc \
+        -ox ca_positions.xvg &> "$RUNDIR/logs/analysis_ca_coords.log"
+    log_success "Coordenadas C-alpha: ca_positions.xvg"
+
     # 5. Cluster analysis (conformaciones representativas)
     echo -e "\n${YELLOW}Análisis de clusters...${NC}"
 

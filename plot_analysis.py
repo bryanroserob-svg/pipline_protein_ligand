@@ -196,6 +196,50 @@ def plot_fel(filepath):
     return fig, True
 
 
+def plot_dccm(filepath):
+    """Genera DCCM desde ca_positions.xvg. Retorna (fig, True) o (None, False)."""
+    data, _, _, _, _ = parse_xvg(filepath)
+    if data is None or data.shape[1] < 4:
+        return None, False
+
+    coords = data[:, 1:]  # Quitar columna de tiempo
+    n_atoms = coords.shape[1] // 3
+    n_frames = coords.shape[0]
+
+    if n_atoms < 2:
+        return None, False
+
+    # Reshape a (n_frames, n_atoms, 3)
+    coords_3d = coords.reshape(n_frames, n_atoms, 3)
+
+    # Posiciones medias y fluctuaciones
+    mean_pos = np.mean(coords_3d, axis=0)
+    delta = coords_3d - mean_pos  # (n_frames, n_atoms, 3)
+
+    # Matriz de covarianza: <delta_i · delta_j>
+    cov = np.einsum('tix,tjx->ij', delta, delta) / n_frames
+
+    # Normalizar: C_ij = cov_ij / sqrt(cov_ii * cov_jj)
+    diag = np.sqrt(np.diag(cov))
+    diag[diag == 0] = 1e-10  # evitar división por cero
+    dccm = cov / np.outer(diag, diag)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    im = ax.imshow(dccm, cmap='RdBu_r', vmin=-1, vmax=1,
+                   origin='lower', aspect='equal')
+    cbar = plt.colorbar(im, ax=ax, shrink=0.85, pad=0.02)
+    cbar.set_label('C(i,j)', fontsize=12)
+    ax.set_title('Dynamic Cross-Correlation Matrix (DCCM)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Residuo (Cα)', fontsize=12)
+    ax.set_ylabel('Residuo (Cα)', fontsize=12)
+
+    # Línea diagonal
+    ax.plot([0, n_atoms-1], [0, n_atoms-1], 'k-', linewidth=0.5, alpha=0.3)
+
+    fig.tight_layout()
+    return fig, True
+
+
 # ==========================================
 # CATÁLOGO DE GRÁFICAS
 # ==========================================
@@ -329,6 +373,29 @@ def generate_report(rundir):
                 print(f"  ⚠ No se pudo generar FEL desde proj_2d.xvg")
         else:
             print(f"  ⚠ No encontrado: proj_2d.xvg (FEL no disponible)")
+
+        # Dynamic Cross-Correlation Matrix (DCCM)
+        dccm_file = dirs[0] / 'ca_positions.xvg'
+        if dccm_file.exists():
+            if current_section != 'Correlación Dinámica':
+                current_section = 'Correlación Dinámica'
+                fs = plt.figure(figsize=(10, 2))
+                fs.text(0.5, 0.5, 'Correlación Dinámica', ha='center', va='center',
+                        fontsize=22, fontweight='bold', color='#2563EB')
+                fs.patch.set_facecolor('#F8FAFC')
+                pdf.savefig(fs)
+                plt.close(fs)
+
+            fig_dccm, ok = plot_dccm(dccm_file)
+            if ok and fig_dccm is not None:
+                pdf.savefig(fig_dccm)
+                plt.close(fig_dccm)
+                count += 1
+                print(f"  ✓ DCCM (Correlación Dinámica)")
+            else:
+                print(f"  ⚠ No se pudo generar DCCM desde ca_positions.xvg")
+        else:
+            print(f"  ⚠ No encontrado: ca_positions.xvg (DCCM no disponible)")
 
     print(f"\n{'='*50}")
     print(f"  ✓ Reporte: {output_pdf}")
