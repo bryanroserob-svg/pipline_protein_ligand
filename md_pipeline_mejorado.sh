@@ -1067,6 +1067,12 @@ run_analysis() {
         -first 2 -last 2 &> "$RUNDIR/logs/analysis_pc2.log"
     log_success "Proyección PC2: proj_pc2.xvg"
 
+    # 4b. Proyección 2D (PC1 vs PC2) para Free Energy Landscape
+    echo "Backbone Backbone" | run_gmx anaeig -s tpr_nowat.tpr -f md_clean_nowat.xtc \
+        -v eigenvec.trr -eig eigenval.xvg -2d proj_2d.xvg \
+        -first 1 -last 2 &> "$RUNDIR/logs/analysis_2d.log"
+    log_success "Proyección 2D (PC1 vs PC2): proj_2d.xvg"
+
     # 5. Cluster analysis (conformaciones representativas)
     echo -e "\n${YELLOW}Análisis de clusters...${NC}"
 

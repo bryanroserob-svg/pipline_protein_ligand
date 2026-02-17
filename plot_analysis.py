@@ -148,6 +148,54 @@ def plot_matrix_from_xpm(ax, filepath):
     return True
 
 
+def plot_fel(filepath):
+    """Genera Free Energy Landscape (FEL) desde proj_2d.xvg. Retorna (fig, True) o (None, False)."""
+    data, _, _, _, _ = parse_xvg(filepath)
+    if data is None or data.shape[1] < 2:
+        return None, False
+
+    pc1 = data[:, 0]
+    pc2 = data[:, 1]
+
+    # Histograma 2D
+    nbins = 80
+    H, xedges, yedges = np.histogram2d(pc1, pc2, bins=nbins)
+
+    # Inversión de Boltzmann: ΔG = -kT * ln(P)
+    # T = 300 K, kB = 8.314e-3 kJ/(mol·K)
+    kT = 8.314e-3 * 300  # kJ/mol
+    H = np.where(H > 0, H, np.nan)  # evitar log(0)
+    G = -kT * np.log(H / np.nanmax(H))  # normalizar al mínimo = 0
+    G = G.T  # transponer para que el eje Y sea PC2
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
+    im = ax.imshow(G, origin='lower', extent=extent, aspect='auto',
+                   cmap='RdYlBu_r', interpolation='gaussian')
+    cbar = plt.colorbar(im, ax=ax, shrink=0.85, pad=0.02)
+    cbar.set_label('ΔG (kJ/mol)', fontsize=12)
+    ax.set_title('Free Energy Landscape (FEL)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('PC1 (nm)', fontsize=12)
+    ax.set_ylabel('PC2 (nm)', fontsize=12)
+
+    # Contornos
+    x_centers = 0.5 * (xedges[:-1] + xedges[1:])
+    y_centers = 0.5 * (yedges[:-1] + yedges[1:])
+    G_contour = np.where(np.isnan(G), np.nanmax(G), G)
+    ax.contour(x_centers, y_centers, G_contour, levels=10,
+               colors='black', linewidths=0.4, alpha=0.5)
+
+    # Marcar mínimo de energía
+    min_idx = np.unravel_index(np.nanargmin(G), G.shape)
+    ax.plot(x_centers[min_idx[1]], y_centers[min_idx[0]],
+            '*', color='white', markersize=15, markeredgecolor='black',
+            markeredgewidth=1.0, label='Mínimo global')
+    ax.legend(fontsize=10, loc='upper right')
+
+    fig.tight_layout()
+    return fig, True
+
+
 # ==========================================
 # CATÁLOGO DE GRÁFICAS
 # ==========================================
@@ -257,6 +305,30 @@ def generate_report(rundir):
             else:
                 plt.close(fig)
                 print(f"  ⚠ No se pudo parsear rmsd_matrix.xpm")
+
+        # Free Energy Landscape (FEL)
+        fel_file = dirs[0] / 'proj_2d.xvg'
+        if fel_file.exists():
+            # Separador de sección FEL
+            if current_section != 'Free Energy Landscape':
+                current_section = 'Free Energy Landscape'
+                fs = plt.figure(figsize=(10, 2))
+                fs.text(0.5, 0.5, 'Free Energy Landscape', ha='center', va='center',
+                        fontsize=22, fontweight='bold', color='#2563EB')
+                fs.patch.set_facecolor('#F8FAFC')
+                pdf.savefig(fs)
+                plt.close(fs)
+
+            fig_fel, ok = plot_fel(fel_file)
+            if ok and fig_fel is not None:
+                pdf.savefig(fig_fel)
+                plt.close(fig_fel)
+                count += 1
+                print(f"  ✓ Free Energy Landscape (FEL)")
+            else:
+                print(f"  ⚠ No se pudo generar FEL desde proj_2d.xvg")
+        else:
+            print(f"  ⚠ No encontrado: proj_2d.xvg (FEL no disponible)")
 
     print(f"\n{'='*50}")
     print(f"  ✓ Reporte: {output_pdf}")
