@@ -4,25 +4,10 @@ set -euo pipefail
 #==========================================
 # CONFIGURACIÓN
 #==========================================
-# Auto-detectar gmx o gmx_mpi
-if command -v gmx &> /dev/null; then
-    readonly GMX=gmx
-    readonly USE_MPI=false
-elif command -v gmx_mpi &> /dev/null; then
-    readonly GMX=gmx_mpi
-    readonly USE_MPI=true
-else
-    echo "ERROR: No se encontró GROMACS (gmx o gmx_mpi)" >&2
-    exit 1
-fi
-
 readonly NT=16
-# Para gmx_mpi, mdrun se ejecuta diferente
-if [ "$USE_MPI" = true ]; then
-    readonly MDRUN="$GMX mdrun"
-else
-    readonly MDRUN="$GMX mdrun -nt $NT"
-fi
+GMX=""
+USE_MPI=false
+MDRUN=""
 
 readonly BASE_PROT=proteinas
 readonly BASE_LIG=ligandos
@@ -45,6 +30,19 @@ readonly NC='\033[0m' # No Color
 
 # Variable para rastrear etapa actual (para trap)
 CURRENT_STAGE="inicialización"
+NON_INTERACTIVE=false
+RESUME_MODE=false
+RESUME_FROM=1
+
+# Parámetros opcionales para modo no interactivo
+INPUT_PROT=""
+INPUT_LIG=""
+INPUT_FF=""
+INPUT_BOX_TYPE=""
+INPUT_BOX_DIST=""
+INPUT_WATER_MODEL=""
+INPUT_ION_CONC=""
+INPUT_PROD_NS=""
 
 #==========================================
 # FUNCIONES AUXILIARES
@@ -83,6 +81,25 @@ validate_command() {
     if ! command -v "$1" &> /dev/null; then
         log_error "$1 no está instalado o no está en PATH"
         exit 1
+    fi
+}
+
+init_gmx() {
+    if command -v gmx &> /dev/null; then
+        GMX=gmx
+        USE_MPI=false
+    elif command -v gmx_mpi &> /dev/null; then
+        GMX=gmx_mpi
+        USE_MPI=true
+    else
+        log_error "No se encontró GROMACS (gmx o gmx_mpi)"
+        exit 1
+    fi
+
+    if [ "$USE_MPI" = true ]; then
+        MDRUN="$GMX mdrun"
+    else
+        MDRUN="$GMX mdrun -nt $NT"
     fi
 }
 
@@ -147,7 +164,125 @@ trap cleanup_on_error EXIT
 #==========================================
 validate_dependencies() {
     log_step "Validando dependencias del sistema"
+    validate_command awk
+    validate_command sed
+    validate_command grep
     log_success "GROMACS encontrado: $(which $GMX) $([ "$USE_MPI" = true ] && echo "(MPI)" || echo "(serial)")"
+}
+
+is_positive_float() {
+    awk -v value="$1" 'BEGIN {exit !(value+0 > 0)}'
+}
+
+extract_checkpoint_value() {
+    local ckpt_file="$1"
+    local key="$2"
+    awk -F'=' -v key="$key" '
+        $1==key {
+            value=$2
+            sub(/^"/, "", value)
+            sub(/"$/, "", value)
+            print value
+            exit
+        }
+    ' "$ckpt_file"
+}
+
+print_usage() {
+    cat <<EOF
+Uso:
+  $0 [--resume|-r]
+  $0 --config <archivo.conf>
+  $0 --non-interactive --prot <nombre> --lig <nombre> --ff <ff_dir> [opciones]
+
+Opciones no interactivas:
+  --prot <nombre>         Carpeta dentro de proteinas/
+  --lig <nombre>          Carpeta dentro de ligandos/
+  --ff <ff_dir>           Force field (ej: charmm36-jul2022.ff)
+  --box-type <tipo>       cubic|triclinic|dodecahedron|octahedron
+  --box-dist <nm>         Distancia de caja (default: 1.2)
+  --water <modelo>        tip3p|spc|spce|tip4p|tip5p
+  --ion-conc <M>          Concentración NaCl (default: 0)
+  --prod-ns <ns>          Tiempo de producción (default: 10)
+  --config <archivo>      Archivo KEY=VALUE (sin espacios), ejemplo abajo
+  --non-interactive       Fuerza ejecución sin prompts
+  --help                  Mostrar esta ayuda
+
+Formato de --config:
+  PROT=caspasa9
+  LIG=M4-A
+  FF=charmm36-jul2022.ff
+  BOX_TYPE=dodecahedron
+  BOX_DIST=1.2
+  WATER_MODEL=tip3p
+  ION_CONC=0.15
+  PROD_NS=50
+EOF
+}
+
+load_config_file() {
+    local cfg_file="$1"
+    if [ ! -f "$cfg_file" ]; then
+        log_error "Archivo de configuración no encontrado: $cfg_file"
+        exit 1
+    fi
+
+    while IFS='=' read -r key value; do
+        [ -z "${key:-}" ] && continue
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        key=$(echo "$key" | awk '{$1=$1; print}')
+        value=$(echo "$value" | awk '{$1=$1; print}')
+        case "$key" in
+            PROT) INPUT_PROT="$value" ;;
+            LIG) INPUT_LIG="$value" ;;
+            FF) INPUT_FF="$value" ;;
+            BOX_TYPE) INPUT_BOX_TYPE="$value" ;;
+            BOX_DIST) INPUT_BOX_DIST="$value" ;;
+            WATER_MODEL) INPUT_WATER_MODEL="$value" ;;
+            ION_CONC) INPUT_ION_CONC="$value" ;;
+            PROD_NS) INPUT_PROD_NS="$value" ;;
+            "") ;;
+            *) log_warning "Clave desconocida en config: $key (ignorada)" ;;
+        esac
+    done < "$cfg_file"
+}
+
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --resume|-r)
+                RESUME_MODE=true
+                shift
+                ;;
+            --config)
+                [ -n "${2:-}" ] || { log_error "Falta archivo para --config"; exit 1; }
+                NON_INTERACTIVE=true
+                load_config_file "$2"
+                shift 2
+                ;;
+            --non-interactive)
+                NON_INTERACTIVE=true
+                shift
+                ;;
+            --prot) INPUT_PROT="${2:-}"; shift 2 ;;
+            --lig) INPUT_LIG="${2:-}"; shift 2 ;;
+            --ff) INPUT_FF="${2:-}"; shift 2 ;;
+            --box-type) INPUT_BOX_TYPE="${2:-}"; shift 2 ;;
+            --box-dist) INPUT_BOX_DIST="${2:-}"; shift 2 ;;
+            --water) INPUT_WATER_MODEL="${2:-}"; shift 2 ;;
+            --ion-conc) INPUT_ION_CONC="${2:-}"; shift 2 ;;
+            --prod-ns) INPUT_PROD_NS="${2:-}"; shift 2 ;;
+            --help|-h)
+                print_usage
+                exit 0
+                ;;
+            *)
+                log_error "Opción desconocida: $1"
+                print_usage
+                exit 1
+                ;;
+        esac
+    done
 }
 
 #==========================================
@@ -300,7 +435,7 @@ get_user_input() {
     local NATIVE_FF_NAMES=()
     local gmx_topdir=""
     local gmx_datadir=""
-    gmx_datadir=$($GMX -h 2>&1 | grep -oP 'Data prefix:\s*\K\S+' || true)
+    gmx_datadir=$($GMX --version 2>/dev/null | awk -F': *' '/^Data prefix/ {print $2; exit}' || true)
     if [ -n "$gmx_datadir" ]; then
         gmx_topdir="$gmx_datadir/share/gromacs/top"
     elif [ -d "/usr/local/gromacs/share/gromacs/top" ]; then
@@ -471,6 +606,75 @@ validate_mdp_files() {
     log_success "Archivos MDP validados"
 }
 
+apply_non_interactive_inputs() {
+    log_step "Aplicando parámetros no interactivos"
+
+    [ -n "$INPUT_PROT" ] || { log_error "En modo no interactivo debes indicar --prot o PROT en --config"; exit 1; }
+    [ -n "$INPUT_LIG" ] || { log_error "En modo no interactivo debes indicar --lig o LIG en --config"; exit 1; }
+    [ -n "$INPUT_FF" ] || { log_error "En modo no interactivo debes indicar --ff o FF en --config"; exit 1; }
+
+    PROT="$INPUT_PROT"
+    LIG="$INPUT_LIG"
+    SELECTED_FF_DIR="$INPUT_FF"
+
+    if [ -d "$INITIAL_DIR/$INPUT_FF" ]; then
+        SELECTED_FF_LOCAL=true
+    else
+        SELECTED_FF_LOCAL=false
+    fi
+
+    BOX_TYPE="${INPUT_BOX_TYPE:-dodecahedron}"
+    BOX_DIST="${INPUT_BOX_DIST:-1.2}"
+    WATER_MODEL="${INPUT_WATER_MODEL:-tip3p}"
+    ION_CONC="${INPUT_ION_CONC:-0}"
+    PROD_NS="${INPUT_PROD_NS:-10}"
+
+    case "$BOX_TYPE" in
+        cubic|triclinic|dodecahedron|octahedron) ;;
+        *) log_error "BOX_TYPE inválido: $BOX_TYPE"; exit 1 ;;
+    esac
+
+    case "$WATER_MODEL" in
+        tip3p) WATER_FILE="spc216.gro" ;;
+        spc) WATER_FILE="spc216.gro" ;;
+        spce) WATER_FILE="spc216.gro" ;;
+        tip4p) WATER_FILE="tip4p.gro" ;;
+        tip5p) WATER_FILE="tip5p.gro" ;;
+        *) log_error "WATER_MODEL inválido: $WATER_MODEL"; exit 1 ;;
+    esac
+
+    if ! [[ "$PROD_NS" =~ ^[0-9]+$ ]] || [ "$PROD_NS" -le 0 ]; then
+        log_error "PROD_NS debe ser entero positivo"
+        exit 1
+    fi
+    PROD_NSTEPS=$((PROD_NS * 500000))
+
+    [ -d "$INITIAL_DIR/$BASE_PROT/$PROT" ] || { log_error "Proteína no encontrada: $BASE_PROT/$PROT"; exit 1; }
+    [ -f "$INITIAL_DIR/$BASE_PROT/$PROT/proteina.gro" ] || { log_error "Falta proteina.gro en $BASE_PROT/$PROT"; exit 1; }
+    [ -f "$INITIAL_DIR/$BASE_PROT/$PROT/topol.top" ] || { log_error "Falta topol.top en $BASE_PROT/$PROT"; exit 1; }
+    [ -f "$INITIAL_DIR/$BASE_PROT/$PROT/posre.itp" ] || { log_error "Falta posre.itp en $BASE_PROT/$PROT"; exit 1; }
+
+    [ -d "$INITIAL_DIR/$BASE_LIG/$LIG" ] || { log_error "Ligando no encontrado: $BASE_LIG/$LIG"; exit 1; }
+    [ -f "$INITIAL_DIR/$BASE_LIG/$LIG/ligando.gro" ] || { log_error "Falta ligando.gro en $BASE_LIG/$LIG"; exit 1; }
+    [ -f "$INITIAL_DIR/$BASE_LIG/$LIG/ligando.itp" ] || { log_error "Falta ligando.itp en $BASE_LIG/$LIG"; exit 1; }
+
+    if [ "$SELECTED_FF_LOCAL" = false ]; then
+        if ! [ -d "$INITIAL_DIR/$INPUT_FF" ]; then
+            log_info "Force field asumido como nativo de GROMACS: $INPUT_FF"
+        fi
+    fi
+
+    log_success "Modo no interactivo configurado"
+    log_info "  PROT=$PROT"
+    log_info "  LIG=$LIG"
+    log_info "  FF=$SELECTED_FF_DIR (local=$SELECTED_FF_LOCAL)"
+    log_info "  BOX_TYPE=$BOX_TYPE"
+    log_info "  BOX_DIST=$BOX_DIST"
+    log_info "  WATER_MODEL=$WATER_MODEL"
+    log_info "  ION_CONC=$ION_CONC"
+    log_info "  PROD_NS=$PROD_NS"
+}
+
 #==========================================
 # ESTRUCTURA DE CARPETAS
 #==========================================
@@ -542,9 +746,9 @@ setup_initial_files() {
     else
         log_warning "No se seleccionó force field, usando el referenciado en topol.top"
         # Fallback: detectar desde topol.top
-        FF_DIR=$(grep -oP '"\.\/\K[^/]+\.ff' topol.top | head -1)
+        FF_DIR=$(sed -n 's#.*"\./\([^/]*\.ff\)/.*#\1#p' topol.top | head -1)
         if [ -z "$FF_DIR" ]; then
-            FF_DIR=$(grep -oP '#include\s+"\K[^/]+\.ff' topol.top | head -1)
+            FF_DIR=$(sed -n 's|^#include[[:space:]]\+"\([^/]*\.ff\)/.*|\1|p' topol.top | head -1)
         fi
         if [ -n "$FF_DIR" ] && [ -d "$INITIAL_DIR/$FF_DIR" ]; then
             cp -r "$INITIAL_DIR/$FF_DIR" .
@@ -568,7 +772,7 @@ generate_ligand_restraints() {
 
     # Determinar índice del nuevo grupo dinámicamente
     local last_idx
-    last_idx=$(echo q | "$GMX" make_ndx -f ligando.gro 2>&1 | grep -oP '^\s*\K\d+(?=\s)' | tail -1)
+    last_idx=$(echo q | "$GMX" make_ndx -f ligando.gro 2>&1 | awk '/^[[:space:]]*[0-9]+[[:space:]]/ {idx=$1} END{print idx+0}')
     local new_grp=$((last_idx + 1))
 
     # Crear índice excluyendo hidrógenos
@@ -623,7 +827,9 @@ EOF
         # Buscar la línea del forcefield para insertar DESPUÉS
         local ff_line=$(grep -n '#include.*forcefield\.itp"' topol.top | cut -d: -f1)
 
-        if [ -n "$ff_line" ]; then
+        if grep -q '#include "ligando\.prm"' topol.top; then
+            log_warning "ligando.prm ya estaba incluido en topol.top"
+        elif [ -n "$ff_line" ]; then
             sed -i "${ff_line}a\\
 ; Include ligand parameters (CHARMM format)\\
 #include \"ligando.prm\"" topol.top
@@ -725,7 +931,7 @@ neutralize_system() {
         exit 1
     fi
 
-    if (( $(echo "$ION_CONC > 0" | bc -l) )); then
+    if is_positive_float "$ION_CONC"; then
         echo "SOL" | run_gmx genion -s ions.tpr -o system.gro -p topol.top \
             -pname NA -nname CL -neutral -conc "$ION_CONC" \
             &> "$RUNDIR/logs/genion.log"
@@ -747,7 +953,7 @@ create_index_groups() {
 
     # Determinar dinámicamente los índices de los nuevos grupos
     local last_idx
-    last_idx=$(echo q | "$GMX" make_ndx -f system.gro 2>&1 | grep -oP '^\s*\K\d+(?=\s)' | tail -1)
+    last_idx=$(echo q | "$GMX" make_ndx -f system.gro 2>&1 | awk '/^[[:space:]]*[0-9]+[[:space:]]/ {idx=$1} END{print idx+0}')
     local new_grp1=$((last_idx + 1))
     local new_grp2=$((last_idx + 2))
 
@@ -960,7 +1166,7 @@ run_analysis() {
     # Último frame: obtener tiempo final dinámicamente
     local end_time
     end_time=$("$GMX" check -f md_clean_temp.xtc 2>&1 \
-        | grep -oP 'Last frame\s+\d+\s+time\s+\K[\d.]+' || echo "")
+        | awk '/Last frame/ {for (i=1;i<=NF;i++) if ($i=="time") {print $(i+1); exit}}' || echo "")
     if [ -z "$end_time" ]; then
         end_time=1000000000
         log_warning "No se pudo determinar tiempo final, usando fallback para último frame"
@@ -1208,6 +1414,16 @@ load_checkpoint() {
         exit 1
     fi
 
+    if ! awk '
+        /^[[:space:]]*$/ {next}
+        /^[[:space:]]*#/ {next}
+        /^[A-Z_]+="[^"]*"$/ {next}
+        {exit 1}
+    ' "$ckpt_file"; then
+        log_error "Checkpoint inválido o inseguro: $ckpt_file"
+        exit 1
+    fi
+
     source "$ckpt_file"
     RESUME_FROM=$((LAST_STEP + 1))
 
@@ -1226,11 +1442,16 @@ find_checkpoints() {
     if [ -d "$INITIAL_DIR/$WORKDIR" ]; then
         for dir in "$INITIAL_DIR/$WORKDIR"/*/; do
             if [ -f "${dir}.checkpoint" ]; then
-                source "${dir}.checkpoint"
+                local ckpt_file="${dir}.checkpoint"
+                local ckpt_last_step
+                local ckpt_last_name
+                ckpt_last_step=$(extract_checkpoint_value "$ckpt_file" "LAST_STEP")
+                ckpt_last_name=$(extract_checkpoint_value "$ckpt_file" "LAST_STEP_NAME")
+                [ -z "$ckpt_last_step" ] && continue
                 # Solo mostrar si NO está completado (paso 14 = generate_summary)
-                if [ "$LAST_STEP" -lt 14 ]; then
-                    runs+=("${dir}.checkpoint")
-                    infos+=("$(basename "$dir") (detenido en: $LAST_STEP_NAME, paso $LAST_STEP/14)")
+                if [ "$ckpt_last_step" -lt 14 ]; then
+                    runs+=("$ckpt_file")
+                    infos+=("$(basename "$dir") (detenido en: ${ckpt_last_name:-desconocido}, paso $ckpt_last_step/14)")
                 fi
             fi
         done
@@ -1289,17 +1510,24 @@ main() {
     RESUME_MODE=false
     RESUME_FROM=1
 
-    # Parsear argumentos
-    if [ "${1:-}" = "--resume" ] || [ "${1:-}" = "-r" ]; then
+    parse_args "$@"
+    init_gmx
+
+    # Modo resume
+    if [ "$RESUME_MODE" = true ]; then
         RESUME_MODE=true
         log_step "Modo RESUME activado"
         find_checkpoints
     fi
 
     if [ "$RESUME_MODE" = false ]; then
-        # Ejecución normal: pedir datos al usuario
+        # Ejecución normal
         validate_dependencies
-        get_user_input
+        if [ "$NON_INTERACTIVE" = true ]; then
+            apply_non_interactive_inputs
+        else
+            get_user_input
+        fi
         validate_mdp_files
         setup_directory_structure
     else

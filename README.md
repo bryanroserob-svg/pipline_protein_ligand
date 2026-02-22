@@ -61,6 +61,49 @@ chmod +x md_pipeline_mejorado.sh
 ./md_pipeline_mejorado.sh
 ```
 
+### 1.1 Modo no interactivo (HPC/CI, sin prompts)
+
+También puedes ejecutar el pipeline sin `read` interactivo usando `--config` o flags.
+
+#### Opción A: archivo de configuración (`.conf`)
+
+Ejemplo de archivo `pipeline_ci.conf` (terminación recomendada: **`.conf`**):
+
+```bash
+PROT=caspasa9
+LIG=M4-A
+FF=charmm36-jul2022.ff
+BOX_TYPE=dodecahedron
+BOX_DIST=1.2
+WATER_MODEL=tip3p
+ION_CONC=0.15
+PROD_NS=50
+```
+
+Ejecución:
+
+```bash
+./md_pipeline_mejorado.sh --config pipeline_ci.conf
+```
+
+#### Opción B: flags directos
+
+```bash
+./md_pipeline_mejorado.sh --non-interactive \
+  --prot caspasa9 \
+  --lig M4-A \
+  --ff charmm36-jul2022.ff \
+  --box-type dodecahedron \
+  --box-dist 1.2 \
+  --water tip3p \
+  --ion-conc 0.15 \
+  --prod-ns 50
+```
+
+Valores válidos:
+- `--box-type`: `cubic`, `triclinic`, `dodecahedron`, `octahedron`
+- `--water`: `tip3p`, `spc`, `spce`, `tip4p`, `tip5p`
+
 El script preguntará interactivamente:
 - Nombre de la proteína y ligando
 - Tipo de caja (cúbica, triclínica, dodecaedro, octaedro)
@@ -213,6 +256,15 @@ gmx_MMPBSA --help                            # Verificar
 - **Conda**: `run_mmpbsa.sh` detecta y activa automáticamente entornos con "mmpbsa" en el nombre
 - **FEL**: Free Energy Landscape calculado por inversión de Boltzmann sobre PC1 vs PC2
 - **DCCM**: Dynamic Cross-Correlation Matrix calculada desde coordenadas Cα
+
+## ✅ Mejoras implementadas en esta versión
+
+- **Portabilidad mejorada (sin `grep -P`)**: se reemplazaron extracciones con PCRE por `awk`/`sed` para evitar fallos en entornos donde `grep -P` no está disponible.
+- **Comparación numérica robusta para concentración iónica**: se eliminó la dependencia de `bc` y se usa validación con `awk`.
+- **Carga de checkpoints más segura**: ahora se valida formato del archivo `.checkpoint` antes de ejecutarlo con `source`.
+- **Descubrimiento de checkpoints sin ejecución de código**: el listado de corridas reanudables parsea claves específicas (`LAST_STEP`, `LAST_STEP_NAME`) sin `source` directo.
+- **Edición de topología más idempotente**: se evita duplicar la inclusión de `ligando.prm` si ya existe en `topol.top`.
+- **Validación explícita de utilidades base**: se comprueba disponibilidad de `awk`, `sed` y `grep` al inicio del pipeline.
 
 ## 📄 Licencia
 
