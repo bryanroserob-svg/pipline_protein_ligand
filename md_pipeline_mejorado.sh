@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -Eeuo pipefail
 
 #==========================================
 # CONFIGURACIÓN
@@ -14,6 +14,7 @@ readonly BASE_LIG=ligandos
 readonly BASE_MDP=mdp
 readonly WORKDIR=MD_RUN
 readonly INITIAL_DIR="$(pwd)"
+TOTAL_STEPS=13
 
 # Flag para indicar si el force field es local (copiado) o nativo de GROMACS
 FF_IS_LOCAL=false
@@ -31,8 +32,12 @@ readonly NC='\033[0m' # No Color
 # Variable para rastrear etapa actual (para trap)
 CURRENT_STAGE="inicialización"
 NON_INTERACTIVE=false
+FORCE_NON_INTERACTIVE=false
 RESUME_MODE=false
 RESUME_FROM=1
+DRY_RUN=false
+SHOW_HELP=false
+TEMP_FILES=()
 
 # Parámetros opcionales para modo no interactivo
 INPUT_PROT=""
@@ -148,30 +153,74 @@ adapt_mdp_for_forcefield() {
 #==========================================
 # TRAP PARA LIMPIEZA EN CASO DE ERROR
 #==========================================
+register_temp_file() {
+    TEMP_FILES+=("$1")
+}
+
+cleanup_temp_files() {
+    local tmp
+    for tmp in "${TEMP_FILES[@]}"; do
+        if [ -n "$tmp" ] && [ -f "$tmp" ]; then
+            rm -f "$tmp"
+        fi
+    done
+}
+
 cleanup_on_error() {
-    local exit_code=$?
-    if [ $exit_code -ne 0 ]; then
-        echo ""
-        log_error "Script interrumpido durante: ${CURRENT_STAGE}"
-        log_warning "Archivos parciales en: ${RUNDIR:-desconocido}"
-        log_warning "Revisa los logs en: ${RUNDIR:-desconocido}/logs/"
+    local line_no=$1
+    local cmd=$2
+    local exit_code=$3
+
+    trap - ERR
+
+    echo ""
+    log_error "Script interrumpido durante: ${CURRENT_STAGE}"
+    log_error "Comando fallido (línea ${line_no}): ${cmd}"
+    log_warning "Código de salida: ${exit_code}"
+    cleanup_temp_files
+    log_warning "Archivos parciales en: ${RUNDIR:-desconocido}"
+    log_warning "Revisa los logs en: ${RUNDIR:-desconocido}/logs/"
+}
+
+cleanup_on_exit() {
+    local exit_code=$1
+    if [ "$exit_code" -eq 0 ]; then
+        log_success "Finalización limpia del pipeline"
+        cleanup_temp_files
     fi
 }
-trap cleanup_on_error EXIT
+
+trap 'cleanup_on_error ${LINENO} "${BASH_COMMAND}" "$?"' ERR
+trap 'cleanup_on_exit "$?"' EXIT
 
 #==========================================
 # VALIDACIÓN DE DEPENDENCIAS
 #==========================================
 validate_dependencies() {
     log_step "Validando dependencias del sistema"
-    validate_command awk
-    validate_command sed
-    validate_command grep
-    log_success "GROMACS encontrado: $(which $GMX) $([ "$USE_MPI" = true ] && echo "(MPI)" || echo "(serial)")"
+    local deps=(awk sed grep bc)
+    local dep
+    for dep in "${deps[@]}"; do
+        validate_command "$dep"
+    done
+    log_success "Dependencias validadas: ${deps[*]}"
+    log_success "GROMACS encontrado: $(command -v "$GMX") $([ "$USE_MPI" = true ] && echo "(MPI)" || echo "(serial)")"
+}
+
+is_int() {
+    [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+is_float() {
+    [[ "$1" =~ ^[-+]?[0-9]+([.][0-9]+)?$ || "$1" =~ ^[-+]?[.][0-9]+$ ]]
 }
 
 is_positive_float() {
-    awk -v value="$1" 'BEGIN {exit !(value+0 > 0)}'
+    is_float "$1" && (( $(echo "$1 > 0" | bc -l) ))
+}
+
+is_non_negative_float() {
+    is_float "$1" && (( $(echo "$1 >= 0" | bc -l) ))
 }
 
 extract_checkpoint_value() {
@@ -188,25 +237,111 @@ extract_checkpoint_value() {
     ' "$ckpt_file"
 }
 
+parse_checkpoint_file() {
+    local ckpt_file="$1"
+    local line key value
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+
+        if [[ "$line" =~ ^([A-Z_]+)=\"([^\"]*)\"$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+        else
+            log_error "Checkpoint con formato inválido: $line"
+            return 1
+        fi
+
+        case "$key" in
+            LAST_STEP)
+                if ! is_int "$value"; then
+                    log_error "LAST_STEP inválido en checkpoint: $value"
+                    return 1
+                fi
+                LAST_STEP="$value"
+                ;;
+            LAST_STEP_NAME) LAST_STEP_NAME="$value" ;;
+            PROT) PROT="$value" ;;
+            LIG) LIG="$value" ;;
+            BOX_TYPE) BOX_TYPE="$value" ;;
+            BOX_DIST) BOX_DIST="$value" ;;
+            ION_CONC) ION_CONC="$value" ;;
+            WATER_MODEL) WATER_MODEL="$value" ;;
+            WATER_FILE) WATER_FILE="$value" ;;
+            PROD_NS)
+                if ! is_int "$value"; then
+                    log_error "PROD_NS inválido en checkpoint: $value"
+                    return 1
+                fi
+                PROD_NS="$value"
+                ;;
+            PROD_NSTEPS)
+                if ! is_int "$value"; then
+                    log_error "PROD_NSTEPS inválido en checkpoint: $value"
+                    return 1
+                fi
+                PROD_NSTEPS="$value"
+                ;;
+            RUNDIR) RUNDIR="$value" ;;
+            FF_DIR) FF_DIR="$value" ;;
+            FF_IS_LOCAL)
+                case "$value" in
+                    true|false) FF_IS_LOCAL="$value" ;;
+                    *) log_error "FF_IS_LOCAL inválido en checkpoint: $value"; return 1 ;;
+                esac
+                ;;
+            DRY_RUN)
+                case "$value" in
+                    true|false) DRY_RUN="$value" ;;
+                    *) log_error "DRY_RUN inválido en checkpoint: $value"; return 1 ;;
+                esac
+                ;;
+            TOTAL_STEPS)
+                if ! is_int "$value"; then
+                    log_error "TOTAL_STEPS inválido en checkpoint: $value"
+                    return 1
+                fi
+                TOTAL_STEPS="$value"
+                ;;
+            *)
+                log_error "Clave no permitida en checkpoint: $key"
+                return 1
+                ;;
+        esac
+    done < "$ckpt_file"
+
+    [ -n "${LAST_STEP:-}" ] || { log_error "Checkpoint sin LAST_STEP"; return 1; }
+    [ -n "${RUNDIR:-}" ] || { log_error "Checkpoint sin RUNDIR"; return 1; }
+    return 0
+}
+
 print_usage() {
     cat <<EOF
 Uso:
   $0 [--resume|-r]
-  $0 --config <archivo.conf>
-  $0 --non-interactive --prot <nombre> --lig <nombre> --ff <ff_dir> [opciones]
+  $0 [--config <archivo.conf>] [flags]
 
-Opciones no interactivas:
+Opciones:
   --prot <nombre>         Carpeta dentro de proteinas/
   --lig <nombre>          Carpeta dentro de ligandos/
   --ff <ff_dir>           Force field (ej: charmm36-jul2022.ff)
+  --box <tipo>            Alias de --box-type
   --box-type <tipo>       cubic|triclinic|dodecahedron|octahedron
   --box-dist <nm>         Distancia de caja (default: 1.2)
   --water <modelo>        tip3p|spc|spce|tip4p|tip5p
+  --ion <M>               Alias de --ion-conc
   --ion-conc <M>          Concentración NaCl (default: 0)
   --prod-ns <ns>          Tiempo de producción (default: 10)
-  --config <archivo>      Archivo KEY=VALUE (sin espacios), ejemplo abajo
+  --config <archivo>      Archivo KEY=VALUE (sin espacios)
   --non-interactive       Fuerza ejecución sin prompts
-  --help                  Mostrar esta ayuda
+  --dry-run               Ejecuta preparación + grompp, sin mdrun
+  --resume, -r            Reanuda una corrida incompleta
+  --help, -h              Mostrar esta ayuda
+
+Modo no interactivo automático:
+  Si pasas --prot --lig --ff el pipeline entra en modo no interactivo.
+  Si faltan obligatorios y NO usas --non-interactive, hace fallback a prompts.
 
 Formato de --config:
   PROT=caspasa9
@@ -256,25 +391,61 @@ parse_args() {
                 ;;
             --config)
                 [ -n "${2:-}" ] || { log_error "Falta archivo para --config"; exit 1; }
-                NON_INTERACTIVE=true
                 load_config_file "$2"
                 shift 2
                 ;;
             --non-interactive)
+                FORCE_NON_INTERACTIVE=true
                 NON_INTERACTIVE=true
                 shift
                 ;;
-            --prot) INPUT_PROT="${2:-}"; shift 2 ;;
-            --lig) INPUT_LIG="${2:-}"; shift 2 ;;
-            --ff) INPUT_FF="${2:-}"; shift 2 ;;
-            --box-type) INPUT_BOX_TYPE="${2:-}"; shift 2 ;;
-            --box-dist) INPUT_BOX_DIST="${2:-}"; shift 2 ;;
-            --water) INPUT_WATER_MODEL="${2:-}"; shift 2 ;;
-            --ion-conc) INPUT_ION_CONC="${2:-}"; shift 2 ;;
-            --prod-ns) INPUT_PROD_NS="${2:-}"; shift 2 ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --prot)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --prot"; exit 1; }
+                INPUT_PROT="$2"
+                shift 2
+                ;;
+            --lig)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --lig"; exit 1; }
+                INPUT_LIG="$2"
+                shift 2
+                ;;
+            --ff)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --ff"; exit 1; }
+                INPUT_FF="$2"
+                shift 2
+                ;;
+            --box|--box-type)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --box-type"; exit 1; }
+                INPUT_BOX_TYPE="$2"
+                shift 2
+                ;;
+            --box-dist)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --box-dist"; exit 1; }
+                INPUT_BOX_DIST="$2"
+                shift 2
+                ;;
+            --water)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --water"; exit 1; }
+                INPUT_WATER_MODEL="$2"
+                shift 2
+                ;;
+            --ion|--ion-conc)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --ion"; exit 1; }
+                INPUT_ION_CONC="$2"
+                shift 2
+                ;;
+            --prod-ns)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --prod-ns"; exit 1; }
+                INPUT_PROD_NS="$2"
+                shift 2
+                ;;
             --help|-h)
-                print_usage
-                exit 0
+                SHOW_HELP=true
+                shift
                 ;;
             *)
                 log_error "Opción desconocida: $1"
@@ -283,6 +454,68 @@ parse_args() {
                 ;;
         esac
     done
+}
+
+has_any_non_interactive_input() {
+    [ -n "$INPUT_PROT" ] || [ -n "$INPUT_LIG" ] || [ -n "$INPUT_FF" ] || [ -n "$INPUT_BOX_TYPE" ] || [ -n "$INPUT_BOX_DIST" ] || [ -n "$INPUT_WATER_MODEL" ] || [ -n "$INPUT_ION_CONC" ] || [ -n "$INPUT_PROD_NS" ]
+}
+
+has_required_non_interactive_input() {
+    [ -n "$INPUT_PROT" ] && [ -n "$INPUT_LIG" ] && [ -n "$INPUT_FF" ]
+}
+
+set_water_file_from_model() {
+    case "$WATER_MODEL" in
+        tip3p|spc|spce) WATER_FILE="spc216.gro" ;;
+        tip4p) WATER_FILE="tip4p.gro" ;;
+        tip5p) WATER_FILE="tip5p.gro" ;;
+        *) log_error "WATER_MODEL inválido: $WATER_MODEL"; exit 1 ;;
+    esac
+}
+
+validate_runtime_parameters() {
+    case "$BOX_TYPE" in
+        cubic|triclinic|dodecahedron|octahedron) ;;
+        *) log_error "BOX_TYPE inválido: $BOX_TYPE (use cubic|triclinic|dodecahedron|octahedron)"; exit 1 ;;
+    esac
+
+    if ! is_positive_float "$BOX_DIST"; then
+        log_error "BOX_DIST inválido: '$BOX_DIST'. Debe ser un float > 0"
+        exit 1
+    fi
+
+    if ! is_non_negative_float "$ION_CONC"; then
+        log_error "ION_CONC inválido: '$ION_CONC'. Debe ser un float >= 0"
+        exit 1
+    fi
+
+    if ! is_int "$PROD_NS" || [ "$PROD_NS" -le 0 ]; then
+        log_error "PROD_NS inválido: '$PROD_NS'. Debe ser entero positivo"
+        exit 1
+    fi
+
+    set_water_file_from_model
+    PROD_NSTEPS=$((PROD_NS * 500000))
+}
+
+resolve_execution_mode() {
+    if has_required_non_interactive_input; then
+        NON_INTERACTIVE=true
+        apply_non_interactive_inputs
+        return
+    fi
+
+    if [ "$FORCE_NON_INTERACTIVE" = true ]; then
+        log_error "Modo no interactivo forzado, pero faltan obligatorios: --prot --lig --ff"
+        exit 1
+    fi
+
+    if has_any_non_interactive_input || [ "$NON_INTERACTIVE" = true ]; then
+        log_warning "Parámetros CLI/config incompletos; cambiando a modo interactivo"
+    fi
+
+    NON_INTERACTIVE=false
+    get_user_input
 }
 
 #==========================================
@@ -539,9 +772,15 @@ get_user_input() {
     esac
 
     # Distancia a bordes
-    echo -e "\n  Distancia mínima a los bordes de la caja (nm) [default: 1.2]:"
-    read -r BOX_DIST
-    BOX_DIST=${BOX_DIST:-1.2}
+    while true; do
+        echo -e "\n  Distancia mínima a los bordes de la caja (nm) [default: 1.2]:"
+        read -r BOX_DIST
+        BOX_DIST=${BOX_DIST:-1.2}
+        if is_positive_float "$BOX_DIST"; then
+            break
+        fi
+        log_error "BOX_DIST inválido: '$BOX_DIST'. Debe ser un float > 0"
+    done
 
     # Modelo de agua
     echo -e "\n  Modelo de agua a utilizar:"
@@ -554,25 +793,38 @@ get_user_input() {
     read -r WATER_CHOICE
 
     case $WATER_CHOICE in
-        2) WATER_MODEL="spc"; WATER_FILE="spc216.gro" ;;
-        3) WATER_MODEL="spce"; WATER_FILE="spc216.gro" ;;
-        4) WATER_MODEL="tip4p"; WATER_FILE="tip4p.gro" ;;
-        5) WATER_MODEL="tip5p"; WATER_FILE="tip5p.gro" ;;
-        *) WATER_MODEL="tip3p"; WATER_FILE="spc216.gro" ;;
+        2) WATER_MODEL="spc" ;;
+        3) WATER_MODEL="spce" ;;
+        4) WATER_MODEL="tip4p" ;;
+        5) WATER_MODEL="tip5p" ;;
+        *) WATER_MODEL="tip3p" ;;
     esac
+    set_water_file_from_model
 
     # Concentración iónica
-    echo -e "\n  Concentración de iones NaCl (mol/L) [default: 0]:"
-    echo -e "  ${CYAN}(0 = solo neutralizar, 0.15 = fisiológica)${NC}"
-    read -r ION_CONC
-    ION_CONC=${ION_CONC:-0}
+    while true; do
+        echo -e "\n  Concentración de iones NaCl (mol/L) [default: 0]:"
+        echo -e "  ${CYAN}(0 = solo neutralizar, 0.15 = fisiológica)${NC}"
+        read -r ION_CONC
+        ION_CONC=${ION_CONC:-0}
+        if is_non_negative_float "$ION_CONC"; then
+            break
+        fi
+        log_error "ION_CONC inválido: '$ION_CONC'. Debe ser un float >= 0"
+    done
 
     # Tiempo de producción
-    echo -e "\n  Tiempo de simulación de producción en nanosegundos [default: 10]:"
-    read -r PROD_NS
-    PROD_NS=${PROD_NS:-10}
-    # dt = 0.002 ps → 500000 steps por ns
-    PROD_NSTEPS=$((PROD_NS * 500000))
+    while true; do
+        echo -e "\n  Tiempo de simulación de producción en nanosegundos [default: 10]:"
+        read -r PROD_NS
+        PROD_NS=${PROD_NS:-10}
+        if is_int "$PROD_NS" && [ "$PROD_NS" -gt 0 ]; then
+            break
+        fi
+        log_error "PROD_NS inválido: '$PROD_NS'. Debe ser entero positivo"
+    done
+
+    validate_runtime_parameters
     log_info "Producción: $PROD_NS ns ($PROD_NSTEPS steps)"
 }
 
@@ -609,10 +861,6 @@ validate_mdp_files() {
 apply_non_interactive_inputs() {
     log_step "Aplicando parámetros no interactivos"
 
-    [ -n "$INPUT_PROT" ] || { log_error "En modo no interactivo debes indicar --prot o PROT en --config"; exit 1; }
-    [ -n "$INPUT_LIG" ] || { log_error "En modo no interactivo debes indicar --lig o LIG en --config"; exit 1; }
-    [ -n "$INPUT_FF" ] || { log_error "En modo no interactivo debes indicar --ff o FF en --config"; exit 1; }
-
     PROT="$INPUT_PROT"
     LIG="$INPUT_LIG"
     SELECTED_FF_DIR="$INPUT_FF"
@@ -629,25 +877,7 @@ apply_non_interactive_inputs() {
     ION_CONC="${INPUT_ION_CONC:-0}"
     PROD_NS="${INPUT_PROD_NS:-10}"
 
-    case "$BOX_TYPE" in
-        cubic|triclinic|dodecahedron|octahedron) ;;
-        *) log_error "BOX_TYPE inválido: $BOX_TYPE"; exit 1 ;;
-    esac
-
-    case "$WATER_MODEL" in
-        tip3p) WATER_FILE="spc216.gro" ;;
-        spc) WATER_FILE="spc216.gro" ;;
-        spce) WATER_FILE="spc216.gro" ;;
-        tip4p) WATER_FILE="tip4p.gro" ;;
-        tip5p) WATER_FILE="tip5p.gro" ;;
-        *) log_error "WATER_MODEL inválido: $WATER_MODEL"; exit 1 ;;
-    esac
-
-    if ! [[ "$PROD_NS" =~ ^[0-9]+$ ]] || [ "$PROD_NS" -le 0 ]; then
-        log_error "PROD_NS debe ser entero positivo"
-        exit 1
-    fi
-    PROD_NSTEPS=$((PROD_NS * 500000))
+    validate_runtime_parameters
 
     [ -d "$INITIAL_DIR/$BASE_PROT/$PROT" ] || { log_error "Proteína no encontrada: $BASE_PROT/$PROT"; exit 1; }
     [ -f "$INITIAL_DIR/$BASE_PROT/$PROT/proteina.gro" ] || { log_error "Falta proteina.gro en $BASE_PROT/$PROT"; exit 1; }
@@ -673,6 +903,7 @@ apply_non_interactive_inputs() {
     log_info "  WATER_MODEL=$WATER_MODEL"
     log_info "  ION_CONC=$ION_CONC"
     log_info "  PROD_NS=$PROD_NS"
+    [ "$DRY_RUN" = true ] && log_info "  MODO=DRY-RUN (sin mdrun)"
 }
 
 #==========================================
@@ -797,12 +1028,159 @@ EOF
 #==========================================
 # MODIFICAR TOPOLOGÍA
 #==========================================
+has_include_line() {
+    local top_file="$1"
+    local include_file="$2"
+    awk -v inc="$include_file" '
+        $0 ~ "^[[:space:]]*#include[[:space:]]+\"" inc "\"[[:space:]]*$" {found=1}
+        END {exit !found}
+    ' "$top_file"
+}
+
+count_include_line() {
+    local top_file="$1"
+    local include_file="$2"
+    awk -v inc="$include_file" '
+        $0 ~ "^[[:space:]]*#include[[:space:]]+\"" inc "\"[[:space:]]*$" {count++}
+        END {print count+0}
+    ' "$top_file"
+}
+
+ensure_unique_include_after_anchor() {
+    local top_file="$1"
+    local include_file="$2"
+    local anchor_regex="$3"
+    local include_line="#include \"${include_file}\""
+    local tmp_file="${top_file}.tmp.include.$$"
+    register_temp_file "$tmp_file"
+
+    awk -v inc="$include_file" '
+        $0 ~ "^[[:space:]]*#include[[:space:]]+\"" inc "\"[[:space:]]*$" {
+            seen++
+            if (seen > 1) next
+        }
+        {print}
+    ' "$top_file" > "$tmp_file"
+    mv "$tmp_file" "$top_file"
+
+    if ! has_include_line "$top_file" "$include_file"; then
+        local anchor_line
+        anchor_line=$(awk -v re="$anchor_regex" '$0 ~ re {print NR; exit}' "$top_file")
+        [ -n "$anchor_line" ] || {
+            log_error "No se encontró línea ancla para incluir ${include_file}"
+            return 1
+        }
+
+        tmp_file="${top_file}.tmp.insert.$$"
+        register_temp_file "$tmp_file"
+        awk -v n="$anchor_line" -v ins="$include_line" '
+            NR == n {print; print ins; next}
+            {print}
+        ' "$top_file" > "$tmp_file"
+        mv "$tmp_file" "$top_file"
+    fi
+
+    local include_count
+    include_count=$(count_include_line "$top_file" "$include_file")
+    if [ "$include_count" -ne 1 ]; then
+        log_error "El include ${include_file} quedó duplicado o ausente (count=${include_count})"
+        return 1
+    fi
+}
+
+ensure_single_ligand_molecule_entry() {
+    local top_file="$1"
+    local tmp_file="${top_file}.tmp.molecules.$$"
+    register_temp_file "$tmp_file"
+
+    awk '
+        BEGIN {in_mol=0; has_lig=0; seen_section=0}
+        /^\[[[:space:]]*molecules[[:space:]]*\]/ {
+            seen_section=1
+            in_mol=1
+            print
+            next
+        }
+        /^\[/ {
+            if (in_mol && !has_lig) {
+                print "LIG                 1"
+                has_lig=1
+            }
+            in_mol=0
+            print
+            next
+        }
+        {
+            if (in_mol) {
+                if ($0 ~ /^[[:space:]]*;/ || $0 ~ /^[[:space:]]*$/) {
+                    print
+                    next
+                }
+
+                if ($1 == "LIG") {
+                    if (has_lig) next
+                    has_lig=1
+                    print "LIG                 1"
+                    next
+                }
+            }
+            print
+        }
+        END {
+            if (!seen_section) {
+                exit 2
+            }
+            if (in_mol && !has_lig) {
+                print "LIG                 1"
+            }
+        }
+    ' "$top_file" > "$tmp_file" || return 1
+
+    mv "$tmp_file" "$top_file"
+}
+
+verify_topology_integrity() {
+    local top_file="$1"
+    local include_count lig_count
+
+    awk '/^\[[[:space:]]*molecules[[:space:]]*\]/{found=1} END{exit !found}' "$top_file" || {
+        log_error "topol.top corrupto: no se encontró sección [ molecules ]"
+        return 1
+    }
+
+    include_count=$(count_include_line "$top_file" "ligando.itp")
+    [ "$include_count" -eq 1 ] || {
+        log_error "topol.top corrupto: include de ligando.itp esperado=1, actual=${include_count}"
+        return 1
+    }
+
+    if [ -f "ligando.prm" ]; then
+        include_count=$(count_include_line "$top_file" "ligando.prm")
+        [ "$include_count" -eq 1 ] || {
+            log_error "topol.top corrupto: include de ligando.prm esperado=1, actual=${include_count}"
+            return 1
+        }
+    fi
+
+    lig_count=$(awk '
+        /^\[[[:space:]]*molecules[[:space:]]*\]/{in_mol=1; next}
+        /^\[/{in_mol=0}
+        in_mol && $0 !~ /^[[:space:]]*;/ && $1=="LIG" {count++}
+        END{print count+0}
+    ' "$top_file")
+    [ "$lig_count" -eq 1 ] || {
+        log_error "topol.top corrupto: entrada LIG esperada=1, actual=${lig_count}"
+        return 1
+    }
+
+    return 0
+}
+
 update_topology() {
     log_step "Actualizando archivos de topología"
 
     cd "$RUNDIR/00_setup" || exit 1
 
-    # Añadir restraints a ligando.itp si no existen
     if ! grep -q "POSRES_LIG" ligando.itp; then
         cat <<'EOF' >> ligando.itp
 
@@ -814,73 +1192,37 @@ EOF
         log_success "Restraints añadidos a ligando.itp"
     fi
 
-    # CRÍTICO: Modificar topol.top para incluir parámetros del ligando
-    log_step "Modificando topol.top para incluir ligando y sus parámetros"
-
-    # Crear backup
+    log_step "Modificando topol.top (inserción segura e idempotente)"
     cp topol.top topol.top.backup
 
-    # Si existe ligando.prm, incluirlo PRIMERO (antes del ligando.itp)
+    local forcefield_anchor='^[[:space:]]*#include[[:space:]]+".*forcefield\.itp"[[:space:]]*$'
+    local prm_anchor='^[[:space:]]*#include[[:space:]]+"ligando\.prm"[[:space:]]*$'
+
     if [ -f "ligando.prm" ]; then
-        log_success "Incluyendo parámetros del ligando (ligando.prm)"
-
-        # Buscar la línea del forcefield para insertar DESPUÉS
-        local ff_line=$(grep -n '#include.*forcefield\.itp"' topol.top | cut -d: -f1)
-
-        if grep -q '#include "ligando\.prm"' topol.top; then
-            log_warning "ligando.prm ya estaba incluido en topol.top"
-        elif [ -n "$ff_line" ]; then
-            sed -i "${ff_line}a\\
-; Include ligand parameters (CHARMM format)\\
-#include \"ligando.prm\"" topol.top
-            log_success "ligando.prm incluido después del forcefield"
-        else
-            log_error "No se encontró línea de forcefield.itp en topol.top"
-            exit 1
-        fi
+        ensure_unique_include_after_anchor topol.top "ligando.prm" "$forcefield_anchor"
+        log_success "Include de ligando.prm validado"
     fi
 
-    # Ahora incluir ligando.itp
-    if ! grep -q 'ligando.itp' topol.top; then
-        if [ -f "ligando.prm" ]; then
-            local insert_line=$(grep -n 'ligando\.prm' topol.top | cut -d: -f1)
-        else
-            local insert_line=$(grep -n '#include.*forcefield\.itp"' topol.top | cut -d: -f1)
-        fi
-
-        if [ -n "$insert_line" ]; then
-            sed -i "${insert_line}a\\
-; Include ligand topology\\
-#include \"ligando.itp\"" topol.top
-            log_success "ligando.itp incluido en topol.top"
-        else
-            log_error "No se pudo determinar dónde insertar ligando.itp"
-            exit 1
-        fi
+    if [ -f "ligando.prm" ]; then
+        ensure_unique_include_after_anchor topol.top "ligando.itp" "$prm_anchor"
     else
-        log_warning "ligando.itp ya estaba incluido en topol.top"
+        ensure_unique_include_after_anchor topol.top "ligando.itp" "$forcefield_anchor"
+    fi
+    log_success "Include de ligando.itp validado"
+
+    ensure_single_ligand_molecule_entry topol.top || {
+        log_error "No se pudo insertar entrada LIG en [ molecules ]"
+        cp topol.top.backup topol.top
+        exit 1
+    }
+
+    if ! verify_topology_integrity topol.top; then
+        log_error "Falló verificación de topología; restaurando backup"
+        cp topol.top.backup topol.top
+        exit 1
     fi
 
-    # Añadir molécula LIG en la sección [ molecules ]
-    if ! grep -q '^LIG' topol.top; then
-        if grep -q '^\[ molecules \]' topol.top; then
-            local prot_name=$(awk '/^\[ molecules \]/{flag=1; next} flag && NF>0 && !/^;/{print $1; exit}' topol.top)
-            sed -i "/^\[ molecules \]/,/^${prot_name}/s/^\(${prot_name}.*\)/\1\nLIG                 1/" topol.top
-            log_success "Molécula LIG añadida a topol.top"
-        else
-            log_error "No se encontró sección [ molecules ] en topol.top"
-            exit 1
-        fi
-    else
-        log_warning "Molécula LIG ya estaba en topol.top"
-    fi
-
-    # Verificar el resultado
-    log_step "Verificando topol.top modificado"
-    echo "--- Includes encontrados ---"
-    grep '#include' topol.top | head -10
-    echo -e "\n--- Sección molecules ---"
-    sed -n '/\[ molecules \]/,/^$/p' topol.top
+    log_success "topol.top actualizado correctamente (idempotente)"
 }
 
 #==========================================
@@ -1124,6 +1466,68 @@ run_production() {
     log_success "Simulación de producción completada"
 }
 
+run_dry_run_grompp_checks() {
+    log_step "Dry-run: validando topologías con grompp (sin mdrun)"
+
+    # EM
+    link_setup_files "$RUNDIR/01_minimization"
+    cp -f ../00_setup/system.gro dryrun_system.gro
+    run_gmx grompp -f "$RUNDIR/mdp_used/em.mdp" -c dryrun_system.gro -p topol.top -n index.ndx \
+        -o em_dry.tpr -maxwarn 2 &> "$RUNDIR/logs/dryrun_grompp_em.log"
+    log_success "Dry-run grompp EM OK"
+
+    # NVT
+    link_setup_files "$RUNDIR/02_equilibration"
+    cp -f ../00_setup/system.gro dryrun_system.gro
+
+    local nvt_mdp="nvt_temp_dry.mdp"
+    cp "$RUNDIR/mdp_used/nvt.mdp" "$nvt_mdp"
+    if ! grep -q "^define" "$nvt_mdp"; then
+        sed -i '1i define = -DPOSRES -DPOSRES_LIG' "$nvt_mdp"
+    else
+        sed -i 's/^define.*/define = -DPOSRES -DPOSRES_LIG/' "$nvt_mdp"
+    fi
+    sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$nvt_mdp"
+    sed -i 's/^tau_t.*/tau_t                    = 0.1     0.1/' "$nvt_mdp"
+    sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$nvt_mdp"
+
+    run_gmx grompp -f "$nvt_mdp" -c dryrun_system.gro -r dryrun_system.gro -p topol.top -n index.ndx \
+        -o nvt_dry.tpr -maxwarn 2 &> "$RUNDIR/logs/dryrun_grompp_nvt.log"
+    log_success "Dry-run grompp NVT OK"
+
+    # NPT
+    local npt_mdp="npt_temp_dry.mdp"
+    cp "$RUNDIR/mdp_used/npt.mdp" "$npt_mdp"
+    if ! grep -q "^define" "$npt_mdp"; then
+        sed -i '1i define = -DPOSRES -DPOSRES_LIG' "$npt_mdp"
+    else
+        sed -i 's/^define.*/define = -DPOSRES -DPOSRES_LIG/' "$npt_mdp"
+    fi
+    sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$npt_mdp"
+    sed -i 's/^tau_t.*/tau_t                    = 0.1     0.1/' "$npt_mdp"
+    sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$npt_mdp"
+
+    run_gmx grompp -f "$npt_mdp" -c dryrun_system.gro -r dryrun_system.gro -p topol.top -n index.ndx \
+        -o npt_dry.tpr -maxwarn 2 &> "$RUNDIR/logs/dryrun_grompp_npt.log"
+    log_success "Dry-run grompp NPT OK"
+
+    # MD producción
+    link_setup_files "$RUNDIR/03_production"
+    cp -f ../00_setup/system.gro dryrun_system.gro
+
+    local md_mdp="md_prod_temp_dry.mdp"
+    cp "$RUNDIR/mdp_used/md_prod.mdp" "$md_mdp"
+    sed -i "s/^nsteps.*/nsteps                   = ${PROD_NSTEPS}      ; ${PROD_NS} ns/" "$md_mdp"
+    sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$md_mdp"
+    sed -i 's/^tau_t.*/tau_t                    = 0.1     0.1/' "$md_mdp"
+    sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$md_mdp"
+
+    run_gmx grompp -f "$md_mdp" -c dryrun_system.gro -p topol.top -n index.ndx \
+        -o md_dry.tpr -maxwarn 2 &> "$RUNDIR/logs/dryrun_grompp_md.log"
+    log_success "Dry-run grompp producción OK"
+    log_warning "Dry-run activo: no se ejecutó ningún mdrun"
+}
+
 #==========================================
 # ANÁLISIS POST-PRODUCCIÓN
 #==========================================
@@ -1315,20 +1719,48 @@ run_analysis() {
 generate_summary() {
     log_step "Generando resumen final"
 
+    local run_date host_name gmx_version cpu_model cpu_cores gpu_info exec_mode
+    run_date=$(date '+%Y-%m-%d %H:%M:%S')
+    host_name=$(hostname 2>/dev/null || echo "desconocido")
+    gmx_version=$($GMX --version 2>/dev/null | awk -F': *' '/^GROMACS version/ {print $2; exit}')
+    gmx_version=${gmx_version:-"no-detectada"}
+    cpu_model=$(lscpu 2>/dev/null | awk -F': *' '/Model name/ {print $2; exit}')
+    cpu_model=${cpu_model:-"no-detectado"}
+    cpu_cores=$(nproc 2>/dev/null || echo "no-detectado")
+    if command -v nvidia-smi &> /dev/null; then
+        gpu_info=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | awk 'NR==1{print; exit}')
+        gpu_info=${gpu_info:-"detectada pero no disponible"}
+    else
+        gpu_info="no-detectada"
+    fi
+    exec_mode=$([ "$DRY_RUN" = true ] && echo "dry-run" || echo "normal")
+
     cat > "$RUNDIR/SUMMARY.txt" <<EOF
 ====================================
 RESUMEN DE SIMULACIÓN MD
 ====================================
 Proteína:     $PROT
 Ligando:      $LIG
-Fecha:        $(date)
+Fecha:        $run_date
 Directorio:   $RUNDIR
+
+TRAZABILIDAD DEL ENTORNO:
+- Modo ejecución:       $exec_mode
+- Hostname:             $host_name
+- GROMACS binario:      $(command -v "$GMX")
+- GROMACS versión:      $gmx_version
+- CPU modelo:           $cpu_model
+- CPU cores (nproc):    $cpu_cores
+- GPU:                  $gpu_info
 
 PARÁMETROS DE SIMULACIÓN:
 - GROMACS:             $GMX $([ "$USE_MPI" = true ] && echo "(MPI)" || echo "(serial)")
+- Force field:         $FF_DIR (local=$FF_IS_LOCAL)
 - Tipo de caja:        $BOX_TYPE
 - Distancia a bordes:  $BOX_DIST nm
 - Modelo de agua:      $WATER_MODEL
+- Concentración iónica:$ION_CONC M NaCl
+- Producción objetivo:  $PROD_NS ns ($PROD_NSTEPS steps)
 - Número de threads:   $NT
 
 RESTRICCIONES POSICIONALES:
@@ -1379,6 +1811,10 @@ PRÓXIMOS PASOS:
 3. Analizar estabilidad: gyrate.xvg
 4. Evaluar H-bonds: hbond_protein_ligand.xvg
 5. Visualizar: PyMOL/VMD con md_clean_nowat.xtc
+
+NOTA DRY-RUN:
+- Si Modo ejecución = dry-run, no se ejecutaron etapas largas de mdrun ni análisis.
+- Revise logs dryrun_grompp_* para confirmar topología y preparación.
 EOF
 
     cat "$RUNDIR/SUMMARY.txt"
@@ -1399,10 +1835,15 @@ PROT="$PROT"
 LIG="$LIG"
 BOX_TYPE="$BOX_TYPE"
 BOX_DIST="$BOX_DIST"
+ION_CONC="$ION_CONC"
 WATER_MODEL="$WATER_MODEL"
 WATER_FILE="$WATER_FILE"
 PROD_NS="$PROD_NS"
 PROD_NSTEPS="$PROD_NSTEPS"
+FF_DIR="$FF_DIR"
+FF_IS_LOCAL="$FF_IS_LOCAL"
+DRY_RUN="$DRY_RUN"
+TOTAL_STEPS="$TOTAL_STEPS"
 RUNDIR="$RUNDIR"
 CKPT
 }
@@ -1414,17 +1855,11 @@ load_checkpoint() {
         exit 1
     fi
 
-    if ! awk '
-        /^[[:space:]]*$/ {next}
-        /^[[:space:]]*#/ {next}
-        /^[A-Z_]+="[^"]*"$/ {next}
-        {exit 1}
-    ' "$ckpt_file"; then
+    if ! parse_checkpoint_file "$ckpt_file"; then
         log_error "Checkpoint inválido o inseguro: $ckpt_file"
         exit 1
     fi
 
-    source "$ckpt_file"
     RESUME_FROM=$((LAST_STEP + 1))
 
     log_success "Checkpoint cargado:"
@@ -1445,13 +1880,16 @@ find_checkpoints() {
                 local ckpt_file="${dir}.checkpoint"
                 local ckpt_last_step
                 local ckpt_last_name
+                local ckpt_total_steps
                 ckpt_last_step=$(extract_checkpoint_value "$ckpt_file" "LAST_STEP")
                 ckpt_last_name=$(extract_checkpoint_value "$ckpt_file" "LAST_STEP_NAME")
+                ckpt_total_steps=$(extract_checkpoint_value "$ckpt_file" "TOTAL_STEPS")
+                ckpt_total_steps=${ckpt_total_steps:-$TOTAL_STEPS}
                 [ -z "$ckpt_last_step" ] && continue
-                # Solo mostrar si NO está completado (paso 14 = generate_summary)
-                if [ "$ckpt_last_step" -lt 14 ]; then
+                # Solo mostrar si NO está completado
+                if [ "${ckpt_last_name:-}" != "COMPLETADO" ] && [ "$ckpt_last_step" -lt "$ckpt_total_steps" ]; then
                     runs+=("$ckpt_file")
-                    infos+=("$(basename "$dir") (detenido en: ${ckpt_last_name:-desconocido}, paso $ckpt_last_step/14)")
+                    infos+=("$(basename "$dir") (detenido en: ${ckpt_last_name:-desconocido}, paso $ckpt_last_step/$ckpt_total_steps)")
                 fi
             fi
         done
@@ -1494,7 +1932,7 @@ run_step() {
         return 0
     fi
 
-    log_step "Paso $step_num/14: $step_name"
+    log_step "Paso $step_num/$TOTAL_STEPS: $step_name"
     "$step_func"
 
     # Guardar checkpoint después de cada paso exitoso
@@ -1509,47 +1947,59 @@ run_step() {
 main() {
     RESUME_MODE=false
     RESUME_FROM=1
+    TOTAL_STEPS=13
 
     parse_args "$@"
+
+    if [ "$SHOW_HELP" = true ]; then
+        print_usage
+        exit 0
+    fi
+
     init_gmx
+    validate_dependencies
 
     # Modo resume
     if [ "$RESUME_MODE" = true ]; then
-        RESUME_MODE=true
         log_step "Modo RESUME activado"
         find_checkpoints
     fi
 
     if [ "$RESUME_MODE" = false ]; then
-        # Ejecución normal
-        validate_dependencies
-        if [ "$NON_INTERACTIVE" = true ]; then
-            apply_non_interactive_inputs
-        else
-            get_user_input
-        fi
+        resolve_execution_mode
         validate_mdp_files
         setup_directory_structure
-    else
-        validate_dependencies
     fi
 
-    run_step 1  "Copiar archivos"              setup_initial_files
-    run_step 2  "Restraints del ligando"        generate_ligand_restraints
-    run_step 3  "Actualizar topología"          update_topology
-    run_step 4  "Ensamblar complejo"            build_complex
-    run_step 5  "Solvatar sistema"              solvate_system
-    run_step 6  "Neutralizar sistema"           neutralize_system
-    run_step 7  "Crear grupos de índice"        create_index_groups
-    run_step 8  "Minimización de energía"       run_minimization
-    run_step 9  "Equilibración NVT"             run_nvt_equilibration
-    run_step 10 "Equilibración NPT"             run_npt_equilibration
-    run_step 11 "Producción"                    run_production
-    run_step 12 "Análisis post-producción"      run_analysis
-    run_step 13 "Generar resumen"               generate_summary
+    if [ "$DRY_RUN" = true ]; then
+        TOTAL_STEPS=9
+        run_step 1 "Copiar archivos"                setup_initial_files
+        run_step 2 "Restraints del ligando"         generate_ligand_restraints
+        run_step 3 "Actualizar topología"           update_topology
+        run_step 4 "Ensamblar complejo"             build_complex
+        run_step 5 "Solvatar sistema"               solvate_system
+        run_step 6 "Neutralizar sistema"            neutralize_system
+        run_step 7 "Crear grupos de índice"         create_index_groups
+        run_step 8 "Validar grompp (dry-run)"       run_dry_run_grompp_checks
+        run_step 9 "Generar resumen"                generate_summary
+    else
+        run_step 1  "Copiar archivos"              setup_initial_files
+        run_step 2  "Restraints del ligando"       generate_ligand_restraints
+        run_step 3  "Actualizar topología"         update_topology
+        run_step 4  "Ensamblar complejo"           build_complex
+        run_step 5  "Solvatar sistema"             solvate_system
+        run_step 6  "Neutralizar sistema"          neutralize_system
+        run_step 7  "Crear grupos de índice"       create_index_groups
+        run_step 8  "Minimización de energía"      run_minimization
+        run_step 9  "Equilibración NVT"            run_nvt_equilibration
+        run_step 10 "Equilibración NPT"            run_npt_equilibration
+        run_step 11 "Producción"                   run_production
+        run_step 12 "Análisis post-producción"     run_analysis
+        run_step 13 "Generar resumen"              generate_summary
+    fi
 
     # Marcar como completado
-    save_checkpoint 14 "COMPLETADO"
+    save_checkpoint "$TOTAL_STEPS" "COMPLETADO"
 
     log_step "¡SIMULACIÓN FINALIZADA CON ÉXITO!"
     echo -e "${GREEN}Todos los resultados en: $RUNDIR${NC}"

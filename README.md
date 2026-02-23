@@ -1,73 +1,103 @@
-# 🧬 GROMACS MD Pipeline Automatizado
+# GROMACS MD Pipeline Automatizado (Proteina + Ligando)
 
-Pipeline automatizado para simulaciones de Dinámica Molecular de complejos proteína-ligando usando **GROMACS 2025.x**.
+Pipeline para simulaciones de dinamica molecular de complejos proteina-ligando con GROMACS.
 
-## 📋 Requisitos
+## Requisitos
 
-| Software | Versión | Uso |
-|---|---|---|
-| **GROMACS** | 2025.x | Simulación MD |
-| **Python 3** | 3.8+ | Gráficas de análisis |
-| **matplotlib + numpy** | - | `pip install matplotlib numpy` |
-| **gmx_MMPBSA** *(opcional)* | 1.6+ | Energía libre de unión |
-| **AmberTools** *(opcional)* | 23+ | Requerido por gmx_MMPBSA |
+Dependencias validadas al inicio de `md_pipeline_mejorado.sh`:
 
-## 📁 Estructura del Proyecto
+- `gmx` o `gmx_mpi`
+- `awk`
+- `sed`
+- `grep`
+- `bc`
 
-```
-gromacs_automatizado/
-├── md_pipeline_mejorado.sh    # Pipeline principal de MD
-├── run_mmpbsa.sh              # Análisis MM-PB(GB)SA
-├── plot_analysis.py           # Generador de gráficas PDF
-├── README.md
-├── proteinas/                 # Carpeta de proteínas
-│   └── mi_proteina/
-│       ├── proteina.gro
-│       ├── topol.top
-│       └── posre.itp
-├── ligandos/                  # Carpeta de ligandos
-│   └── mi_ligando/
-│       ├── ligando.gro
-│       ├── ligando.itp
-│       └── ligando.prm        # (opcional, para CHARMM)
-├── mdp/                       # Archivos de parámetros
-│   ├── ions.mdp
-│   ├── em.mdp
-│   ├── nvt.mdp
-│   ├── npt.mdp
-│   └── md_prod.mdp
-├── charmm36.ff/               # (opcional) Force field
-└── MD_RUN/                    # Resultados (generado automáticamente)
-    └── proteina_ligando_YYYYMMDD_HHMMSS/
-        ├── 00_setup/
-        ├── 01_minimization/
-        ├── 02_equilibration/
-        ├── 03_production/
-        ├── 04_analysis/
-        ├── 05_mmpbsa_*/       # (si se ejecuta run_mmpbsa.sh)
-        ├── logs/
-        ├── mdp_used/
-        ├── .checkpoint         # Estado para resume
-        ├── SUMMARY.txt
-        └── REPORT_MD.pdf      # (si se ejecuta plot_analysis.py)
+Dependencias recomendadas para analisis y reportes:
+
+- `python3`
+- `numpy`
+- `matplotlib`
+
+## Estructura esperada
+
+```text
+Automatizacion_proteina_ligando/
+|- md_pipeline_mejorado.sh
+|- plot_analysis.py
+|- README.md
+|- proteinas/
+|  `- mi_proteina/
+|     |- proteina.gro
+|     |- topol.top
+|     `- posre.itp
+|- ligandos/
+|  `- mi_ligando/
+|     |- ligando.gro
+|     |- ligando.itp
+|     `- ligando.prm   (opcional)
+|- mdp/
+|  |- ions.mdp
+|  |- em.mdp
+|  |- nvt.mdp
+|  |- npt.mdp
+|  `- md_prod.mdp
+`- MD_RUN/             (salida automatica)
 ```
 
-## 🚀 Uso Rápido
-
-### 1. Pipeline de MD (simulación completa)
+## Ejecucion interactiva
 
 ```bash
 chmod +x md_pipeline_mejorado.sh
 ./md_pipeline_mejorado.sh
 ```
 
-### 1.1 Modo no interactivo (HPC/CI, sin prompts)
+## Modo no interactivo (flags CLI)
 
-También puedes ejecutar el pipeline sin `read` interactivo usando `--config` o flags.
+El pipeline entra automaticamente a modo no interactivo cuando detecta los obligatorios:
 
-#### Opción A: archivo de configuración (`.conf`)
+- `--prot`
+- `--lig`
+- `--ff`
 
-Ejemplo de archivo `pipeline_ci.conf` (terminación recomendada: **`.conf`**):
+Si faltan obligatorios, el script hace fallback a modo interactivo (salvo que uses `--non-interactive`, donde falla de forma explicita).
+
+### Ejemplo minimo no interactivo
+
+```bash
+./md_pipeline_mejorado.sh \
+  --prot caspasa9 \
+  --lig M4-A \
+  --ff charmm36-jul2022.ff
+```
+
+### Ejemplo no interactivo completo
+
+```bash
+./md_pipeline_mejorado.sh \
+  --prot caspasa9 \
+  --lig M4-A \
+  --ff charmm36-jul2022.ff \
+  --box dodecahedron \
+  --box-dist 1.2 \
+  --water tip3p \
+  --ion 0.15 \
+  --prod-ns 50
+```
+
+Tambien se soportan alias:
+
+- `--box` (alias de `--box-type`)
+- `--ion` (alias de `--ion-conc`)
+
+## Archivo de configuracion (`--config`)
+
+Puedes cargar parametros desde archivo:
+
+```bash
+./md_pipeline_mejorado.sh --config pipeline.conf
+```
+
+Formato:
 
 ```bash
 PROT=caspasa9
@@ -80,192 +110,88 @@ ION_CONC=0.15
 PROD_NS=50
 ```
 
-Ejecución:
+## Modo `--dry-run`
+
+`--dry-run` ejecuta validaciones, armado del sistema y verificaciones de `grompp`, pero no ejecuta etapas largas de `mdrun`.
 
 ```bash
-./md_pipeline_mejorado.sh --config pipeline_ci.conf
-```
-
-#### Opción B: flags directos
-
-```bash
-./md_pipeline_mejorado.sh --non-interactive \
+./md_pipeline_mejorado.sh \
   --prot caspasa9 \
   --lig M4-A \
-  --ff charmm36-jul2022.ff \
-  --box-type dodecahedron \
-  --box-dist 1.2 \
-  --water tip3p \
-  --ion-conc 0.15 \
-  --prod-ns 50
+  --ff charmm27.ff \
+  --dry-run
 ```
 
-Valores válidos:
-- `--box-type`: `cubic`, `triclinic`, `dodecahedron`, `octahedron`
-- `--water`: `tip3p`, `spc`, `spce`, `tip4p`, `tip5p`
+En dry-run, revisa especialmente:
 
-El script preguntará interactivamente:
-- Nombre de la proteína y ligando
-- Tipo de caja (cúbica, triclínica, dodecaedro, octaedro)
-- Distancia a bordes (nm)
-- Modelo de agua (TIP3P, SPC, SPC/E, TIP4P, TIP5P)
-- Concentración iónica NaCl (0 = solo neutralizar, 0.15 = fisiológica)
-- Tiempo de producción (ns)
+- `logs/dryrun_grompp_em.log`
+- `logs/dryrun_grompp_nvt.log`
+- `logs/dryrun_grompp_npt.log`
+- `logs/dryrun_grompp_md.log`
 
-**Flujo del pipeline (13 pasos con checkpoint automático):**
-
-```
-Paso  1: Copiar archivos de entrada
-Paso  2: Generar restraints del ligando
-Paso  3: Actualizar topología
-Paso  4: Ensamblar complejo proteína-ligando
-Paso  5: Solvatar sistema
-Paso  6: Neutralizar con iones
-Paso  7: Crear grupos de índice
-Paso  8: Minimización de energía
-Paso  9: Equilibración NVT (calentamiento)
-Paso 10: Equilibración NPT (presión)
-Paso 11: Producción (sin restricciones)
-Paso 12: Análisis post-producción
-Paso 13: Generar resumen
-```
-
-### 2. Reanudar una corrida interrumpida
-
-Si el pipeline falla o se interrumpe, puedes reanudarlo **sin empezar de cero**:
+## Reanudar corridas
 
 ```bash
 ./md_pipeline_mejorado.sh --resume
 ```
 
-El sistema de checkpoints:
-- **Guarda progreso** automáticamente después de cada paso
-- **No crea una carpeta nueva** — reanuda en la misma
-- **No pide datos otra vez** — carga proteína, ligando, etc. del checkpoint
-- **Si hay varias corridas incompletas**, muestra un menú para elegir cuál reanudar
+El checkpoint se guarda en cada paso exitoso y se valida con parser seguro antes de cargarse.
 
-### 3. Gráficas automáticas
+## Seguridad y robustez implementadas
 
-```bash
-python3 plot_analysis.py                          # Menú interactivo
-python3 plot_analysis.py MD_RUN/mi_corrida/       # Directo
-```
+- Se elimino parseo fragil con `grep -P` / `grep -oP`; se usan alternativas con `awk`/`sed`.
+- Se valida `bc` explicitamente al inicio para comparaciones de punto flotante.
+- La carga de checkpoints evita `source` directo de contenido no confiable.
+- La edicion de `topol.top` ahora es encapsulada, idempotente y con verificacion estricta post-edicion.
+- Manejo de errores reforzado con `set -E` + `trap ERR` + limpieza de temporales.
 
-Genera `REPORT_MD.pdf` con ~20 gráficas organizadas por secciones:
+## Reproducibilidad
 
-| Sección | Gráficas incluidas |
-|---|---|
-| Minimización | Energía potencial |
-| Equilibración | Temperatura (NVT), Presión (NPT), Densidad (NPT) |
-| Estabilidad Estructural | RMSD backbone, RMSD proteína, Radio de giro |
-| Estabilidad del Ligando | RMSD ligando, Distancia mínima prot-lig |
-| Flexibilidad | RMSF por residuo |
-| Propiedades Superficiales | SASA |
-| Interacciones | H-bonds intra-proteína, H-bonds prot-lig, Contactos prot-lig |
-| PCA | Eigenvalores, PC1, PC2 |
-| Matriz RMSD | Heatmap RMSD vs RMSD |
-| Free Energy Landscape | FEL (inversión de Boltzmann sobre PC1 vs PC2) |
-| Correlación Dinámica | DCCM (Dynamic Cross-Correlation Matrix) |
+Al final de cada corrida se genera `SUMMARY.txt` con:
 
-### 4. Energía libre de unión (MM-PB/GBSA)
+- Fecha/hora exacta
+- Hostname
+- Binario y version de GROMACS
+- Info basica de CPU/GPU
+- Parametros clave de simulacion
+- Modo de ejecucion (`normal` o `dry-run`)
+
+## Ejemplos para SLURM/SGE
+
+### SLURM
 
 ```bash
-conda activate gmx_mmpbsa_env   # (se activa automáticamente si existe)
-chmod +x run_mmpbsa.sh
-./run_mmpbsa.sh
+#!/bin/bash
+#SBATCH -J md_prot_lig
+#SBATCH -N 1
+#SBATCH -n 16
+#SBATCH --time=48:00:00
+
+./md_pipeline_mejorado.sh \
+  --prot caspasa9 \
+  --lig M4-A \
+  --ff charmm36-jul2022.ff \
+  --box dodecahedron \
+  --water tip3p \
+  --ion 0.15 \
+  --prod-ns 100
 ```
 
-Opciones de cálculo:
-1. **GB** — Rápido (~5-30 min)
-2. **PB** — Lento (~1-4 hrs), más preciso
-3. **GB + PB** — Ambos métodos
-4. **GB + Descomposición** — Identifica residuos clave
-5. **GB + PB + Descomposición** — Análisis completo
-
-## 📊 Archivos de Análisis Generados
-
-### En `04_analysis/`
-
-| Archivo | Descripción |
-|---|---|
-| `rmsd_backbone.xvg` | Estabilidad del backbone vs tiempo |
-| `rmsd_protein.xvg` | RMSD de toda la proteína |
-| `rmsd_ligand.xvg` | RMSD del ligando (¿se mueve del sitio?) |
-| `gyrate.xvg` | Radio de giro (compactación) |
-| `rmsf_residue.xvg` | Flexibilidad por residuo |
-| `mindist_prot_lig.xvg` | Distancia mínima prot-lig (disociación) |
-| `sasa_protein.xvg` | Superficie accesible al solvente |
-| `hbond_protein.xvg` | Puentes de H intra-proteína |
-| `hbond_protein_ligand.xvg` | Puentes de H proteína↔ligando |
-| `hbond_ligand.xvg` | Puentes de H intra-ligando |
-| `eigenval.xvg` | Eigenvalores del PCA |
-| `proj_pc1.xvg` / `proj_pc2.xvg` | Componentes principales |
-| `proj_2d.xvg` | Proyección 2D (PC1 vs PC2) para FEL |
-| `ca_positions.xvg` | Coordenadas Cα para DCCM |
-| `clusters.pdb` | Conformaciones representativas |
-| `rmsd_matrix.xpm` | Mapa de calor RMSD vs RMSD |
-| `contacts_prot_lig.xvg` | Contactos por residuo |
-| `dssp.dat` | Estructura secundaria vs tiempo |
-
-### En `05_mmpbsa_*/`
-
-| Archivo | Descripción |
-|---|---|
-| `FINAL_RESULTS_MMPBSA.dat` | ΔG_bind (energía libre de unión) |
-| `FINAL_DECOMP_MMPBSA.dat` | Contribución por residuo |
-| `_GMXMMPBSA_info` | Para `gmx_MMPBSA_ana` (visualización interactiva) |
-
-## 🔧 Preparación de Archivos de Entrada
-
-### Proteína
-```bash
-gmx pdb2gmx -f proteina.pdb -o proteina.gro -water tip3p
-# Copiar proteina.gro, topol.top, posre.itp a proteinas/nombre/
-```
-
-### Ligando
-1. Obtener la estructura del ligando (`.mol2`)
-2. Generar topología en [CGenFF](https://cgenff.umaryland.edu/) (ParamChem):
-   - Subir el `.mol2` a CGenFF
-   - Descargar el `.str` (stream file)
-   - Convertir a formato GROMACS con `cgenff_charmm2gmx_py3.py` o herramientas similares
-3. **Verificar manualmente** la topología generada (penaltys, cargas, tipos de átomos)
-4. Copiar `ligando.gro`, `ligando.itp` (y `ligando.prm`) a `ligandos/nombre/`
-
-### Archivos MDP
-Los parámetros `tc-grps`, `tau_t`, `ref_t` y `define` se ajustan automáticamente por el pipeline.
-
-## ⚙️ Instalación de gmx_MMPBSA
+### SGE
 
 ```bash
-conda create -n gmx_mmpbsa_env python=3.11 -y
-conda activate gmx_mmpbsa_env
-conda install -c conda-forge ambertools -y
-sudo apt install libopenmpi-dev openmpi-bin   # Solo OpenMPI (NO instalar MPICH también)
-pip install gmx_MMPBSA
-gmx_MMPBSA --help                            # Verificar
+#!/bin/bash
+#$ -N md_prot_lig
+#$ -pe smp 16
+#$ -l h_rt=48:00:00
+
+./md_pipeline_mejorado.sh \
+  --prot caspasa9 \
+  --lig M4-A \
+  --ff charmm36-jul2022.ff \
+  --prod-ns 100
 ```
 
-## 📝 Notas Importantes
+## Licencia
 
-- **GROMACS 2025.x**: Usa `gmx dssp` (integrado), no requiere `mkdssp` externo
-- **Grupos de termostato**: Se crean automáticamente como `Protein_Ligand` y `Solvent`
-- **Restricciones**: NVT y NPT usan `-DPOSRES -DPOSRES_LIG`; producción sin restricciones
-- **`-maxwarn 1`**: Se permite máximo 1 warning en grompp
-- **Checkpoint**: Se guarda en `$RUNDIR/.checkpoint` después de cada paso exitoso
-- **Conda**: `run_mmpbsa.sh` detecta y activa automáticamente entornos con "mmpbsa" en el nombre
-- **FEL**: Free Energy Landscape calculado por inversión de Boltzmann sobre PC1 vs PC2
-- **DCCM**: Dynamic Cross-Correlation Matrix calculada desde coordenadas Cα
-
-## ✅ Mejoras implementadas en esta versión
-
-- **Portabilidad mejorada (sin `grep -P`)**: se reemplazaron extracciones con PCRE por `awk`/`sed` para evitar fallos en entornos donde `grep -P` no está disponible.
-- **Comparación numérica robusta para concentración iónica**: se eliminó la dependencia de `bc` y se usa validación con `awk`.
-- **Carga de checkpoints más segura**: ahora se valida formato del archivo `.checkpoint` antes de ejecutarlo con `source`.
-- **Descubrimiento de checkpoints sin ejecución de código**: el listado de corridas reanudables parsea claves específicas (`LAST_STEP`, `LAST_STEP_NAME`) sin `source` directo.
-- **Edición de topología más idempotente**: se evita duplicar la inclusión de `ligando.prm` si ya existe en `topol.top`.
-- **Validación explícita de utilidades base**: se comprueba disponibilidad de `awk`, `sed` y `grep` al inicio del pipeline.
-
-## 📄 Licencia
-
-Uso libre para investigación académica.
+Uso libre para investigacion academica.
