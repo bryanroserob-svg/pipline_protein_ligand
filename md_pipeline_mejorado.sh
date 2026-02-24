@@ -4,7 +4,7 @@ set -Eeuo pipefail
 #==========================================
 # CONFIGURACIÓN
 #==========================================
-readonly NT=16
+NT=""
 GMX=""
 USE_MPI=false
 MDRUN=""
@@ -48,31 +48,35 @@ INPUT_BOX_DIST=""
 INPUT_WATER_MODEL=""
 INPUT_ION_CONC=""
 INPUT_PROD_NS=""
+INPUT_NT=""
+INPUT_MAXWARN=""
 
 #==========================================
 # FUNCIONES AUXILIARES
 #==========================================
 log_step() {
     CURRENT_STAGE="$1"
-    echo -e "\n${BLUE}=========================================${NC}"
-    echo -e "${BLUE}>>> $1${NC}"
-    echo -e "${BLUE}=========================================${NC}\n"
+    local ts
+    ts=$(date '+%H:%M:%S')
+    echo -e "\n${BLUE}[$ts] =========================================${NC}"
+    echo -e "${BLUE}[$ts] >>> $1${NC}"
+    echo -e "${BLUE}[$ts] =========================================${NC}\n"
 }
 
 log_success() {
-    echo -e "${GREEN}✓${NC} $1"
+    echo -e "${GREEN}✓${NC} [$(date '+%H:%M:%S')] $1"
 }
 
 log_error() {
-    echo -e "${RED}❌ ERROR:${NC} $1" >&2
+    echo -e "${RED}❌ ERROR:${NC} [$(date '+%H:%M:%S')] $1" >&2
 }
 
 log_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
+    echo -e "${YELLOW}⚠${NC} [$(date '+%H:%M:%S')] $1"
 }
 
 log_info() {
-    echo -e "${CYAN}ℹ${NC} $1"
+    echo -e "${CYAN}ℹ${NC} [$(date '+%H:%M:%S')] $1"
 }
 
 create_dir() {
@@ -99,6 +103,11 @@ init_gmx() {
     else
         log_error "No se encontró GROMACS (gmx o gmx_mpi)"
         exit 1
+    fi
+
+    # Auto-detect threads if not set
+    if [ -z "$NT" ]; then
+        NT=$(nproc 2>/dev/null || echo 4)
     fi
 
     if [ "$USE_MPI" = true ]; then
@@ -332,7 +341,9 @@ Opciones:
   --water <modelo>        tip3p|spc|spce|tip4p|tip5p
   --ion <M>               Alias de --ion-conc
   --ion-conc <M>          Concentración NaCl (default: 0)
-  --prod-ns <ns>          Tiempo de producción (default: 10)
+  --prod-ns <ns>          Tiempo de producción en ns (acepta decimales, default: 10)
+  --nthreads <N>          Número de threads para mdrun (default: auto)
+  --maxwarn <N>           Máximo de warnings para grompp (default: 1)
   --config <archivo>      Archivo KEY=VALUE (sin espacios)
   --non-interactive       Fuerza ejecución sin prompts
   --dry-run               Ejecuta preparación + grompp, sin mdrun
@@ -352,6 +363,8 @@ Formato de --config:
   WATER_MODEL=tip3p
   ION_CONC=0.15
   PROD_NS=50
+  NT=16
+  MAXWARN=1
 EOF
 }
 
@@ -376,6 +389,8 @@ load_config_file() {
             WATER_MODEL) INPUT_WATER_MODEL="$value" ;;
             ION_CONC) INPUT_ION_CONC="$value" ;;
             PROD_NS) INPUT_PROD_NS="$value" ;;
+            NT) INPUT_NT="$value" ;;
+            MAXWARN) INPUT_MAXWARN="$value" ;;
             "") ;;
             *) log_warning "Clave desconocida en config: $key (ignorada)" ;;
         esac
@@ -443,6 +458,16 @@ parse_args() {
                 INPUT_PROD_NS="$2"
                 shift 2
                 ;;
+            --nthreads)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --nthreads"; exit 1; }
+                INPUT_NT="$2"
+                shift 2
+                ;;
+            --maxwarn)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --maxwarn"; exit 1; }
+                INPUT_MAXWARN="$2"
+                shift 2
+                ;;
             --help|-h)
                 SHOW_HELP=true
                 shift
@@ -457,7 +482,7 @@ parse_args() {
 }
 
 has_any_non_interactive_input() {
-    [ -n "$INPUT_PROT" ] || [ -n "$INPUT_LIG" ] || [ -n "$INPUT_FF" ] || [ -n "$INPUT_BOX_TYPE" ] || [ -n "$INPUT_BOX_DIST" ] || [ -n "$INPUT_WATER_MODEL" ] || [ -n "$INPUT_ION_CONC" ] || [ -n "$INPUT_PROD_NS" ]
+    [ -n "$INPUT_PROT" ] || [ -n "$INPUT_LIG" ] || [ -n "$INPUT_FF" ] || [ -n "$INPUT_BOX_TYPE" ] || [ -n "$INPUT_BOX_DIST" ] || [ -n "$INPUT_WATER_MODEL" ] || [ -n "$INPUT_ION_CONC" ] || [ -n "$INPUT_PROD_NS" ] || [ -n "$INPUT_NT" ] || [ -n "$INPUT_MAXWARN" ]
 }
 
 has_required_non_interactive_input() {
@@ -489,13 +514,30 @@ validate_runtime_parameters() {
         exit 1
     fi
 
-    if ! is_int "$PROD_NS" || [ "$PROD_NS" -le 0 ]; then
-        log_error "PROD_NS inválido: '$PROD_NS'. Debe ser entero positivo"
+    if ! is_positive_float "$PROD_NS"; then
+        log_error "PROD_NS inválido: '$PROD_NS'. Debe ser un número positivo"
         exit 1
     fi
 
     set_water_file_from_model
-    PROD_NSTEPS=$((PROD_NS * 500000))
+    PROD_NSTEPS=$(awk "BEGIN{printf \"%d\", $PROD_NS * 500000}")
+
+    # Aplicar NT si fue proporcionado
+    if [ -n "${INPUT_NT:-}" ]; then
+        if is_int "$INPUT_NT" && [ "$INPUT_NT" -gt 0 ]; then
+            NT="$INPUT_NT"
+        else
+            log_error "NT inválido: '$INPUT_NT'. Debe ser entero positivo"
+            exit 1
+        fi
+    fi
+
+    # Aplicar MAXWARN si fue proporcionado
+    MAXWARN="${INPUT_MAXWARN:-1}"
+    if ! is_int "$MAXWARN" || [ "$MAXWARN" -lt 0 ]; then
+        log_error "MAXWARN inválido: '$MAXWARN'. Debe ser entero >= 0"
+        exit 1
+    fi
 }
 
 resolve_execution_mode() {
@@ -816,16 +858,25 @@ get_user_input() {
     # Tiempo de producción
     while true; do
         echo -e "\n  Tiempo de simulación de producción en nanosegundos [default: 10]:"
+        echo -e "  ${CYAN}(acepta decimales: 0.5, 1, 10, 50, 100)${NC}"
         read -r PROD_NS
         PROD_NS=${PROD_NS:-10}
-        if is_int "$PROD_NS" && [ "$PROD_NS" -gt 0 ]; then
+        if is_positive_float "$PROD_NS"; then
             break
         fi
-        log_error "PROD_NS inválido: '$PROD_NS'. Debe ser entero positivo"
+        log_error "PROD_NS inválido: '$PROD_NS'. Debe ser un número positivo"
     done
+
+    # Threads
+    echo -e "\n  Número de threads para mdrun [default: auto ($(nproc 2>/dev/null || echo 4))]:"
+    read -r USER_NT
+    if [ -n "$USER_NT" ]; then
+        INPUT_NT="$USER_NT"
+    fi
 
     validate_runtime_parameters
     log_info "Producción: $PROD_NS ns ($PROD_NSTEPS steps)"
+    log_info "Threads: $NT"
 }
 
 #==========================================
@@ -1267,7 +1318,7 @@ neutralize_system() {
     cd "$RUNDIR/00_setup" || exit 1
 
     if ! run_gmx grompp -f "$RUNDIR/mdp_used/ions.mdp" -c solv.gro -p topol.top -o ions.tpr \
-        -maxwarn 2 > "$RUNDIR/logs/grompp_ions.log" 2>&1; then
+        -maxwarn "$MAXWARN" > "$RUNDIR/logs/grompp_ions.log" 2>&1; then
         log_error "grompp falló al generar ions.tpr"
         cat "$RUNDIR/logs/grompp_ions.log"
         exit 1
@@ -1347,7 +1398,9 @@ run_minimization() {
     cp -f ../00_setup/system.gro .
 
     run_gmx grompp -f "$RUNDIR/mdp_used/em.mdp" -c system.gro -p topol.top -n index.ndx \
-        -o em.tpr -maxwarn 1 &> "$RUNDIR/logs/grompp_em.log"
+        -o em.tpr -maxwarn "$MAXWARN" &> "$RUNDIR/logs/grompp_em.log"
+    # Log grompp warnings
+    grep -i 'WARNING' "$RUNDIR/logs/grompp_em.log" | head -5 | while read -r w; do log_warning "grompp-em: $w"; done || true
 
     $MDRUN -deffnm em &> "$RUNDIR/logs/mdrun_em.log"
     log_success "Minimización completada"
@@ -1376,15 +1429,15 @@ run_nvt_equilibration() {
         sed -i 's/^define.*/define = -DPOSRES -DPOSRES_LIG/' "$nvt_mdp"
     fi
 
-    # CRÍTICO: Reemplazar grupos de temperatura
+    # Reemplazar grupos de temperatura (tau_t se deja como está en el MDP original)
     sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$nvt_mdp"
-    sed -i 's/^tau_t.*/tau_t                    = 0.1     0.1/' "$nvt_mdp"
     sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$nvt_mdp"
 
     log_success "Grupos de termostato actualizados en nvt_temp.mdp"
 
     run_gmx grompp -f "$nvt_mdp" -c em.gro -r em.gro -p topol.top -n index.ndx \
-        -o nvt.tpr -maxwarn 1 &> "$RUNDIR/logs/grompp_nvt.log"
+        -o nvt.tpr -maxwarn "$MAXWARN" &> "$RUNDIR/logs/grompp_nvt.log"
+    grep -i 'WARNING' "$RUNDIR/logs/grompp_nvt.log" | head -5 | while read -r w; do log_warning "grompp-nvt: $w"; done || true
 
     $MDRUN -deffnm nvt &> "$RUNDIR/logs/mdrun_nvt.log"
     log_success "NVT completado (proteína y ligando restringidos)"
@@ -1412,15 +1465,15 @@ run_npt_equilibration() {
         sed -i 's/^define.*/define = -DPOSRES -DPOSRES_LIG/' "$npt_mdp"
     fi
 
-    # CRÍTICO: Reemplazar grupos de temperatura
+    # Reemplazar grupos de temperatura (tau_t se deja como está en el MDP original)
     sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$npt_mdp"
-    sed -i 's/^tau_t.*/tau_t                    = 0.1     0.1/' "$npt_mdp"
     sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$npt_mdp"
 
     log_success "Grupos de termostato actualizados en npt_temp.mdp"
 
     run_gmx grompp -f "$npt_mdp" -c nvt.gro -r nvt.gro -t nvt.cpt -p topol.top \
-        -n index.ndx -o npt.tpr -maxwarn 1 &> "$RUNDIR/logs/grompp_npt.log"
+        -n index.ndx -o npt.tpr -maxwarn "$MAXWARN" &> "$RUNDIR/logs/grompp_npt.log"
+    grep -i 'WARNING' "$RUNDIR/logs/grompp_npt.log" | head -5 | while read -r w; do log_warning "grompp-npt: $w"; done || true
 
     $MDRUN -deffnm npt &> "$RUNDIR/logs/mdrun_npt.log"
     log_success "NPT completado (proteína y ligando restringidos)"
@@ -1449,15 +1502,15 @@ run_production() {
     # Actualizar nsteps según el tiempo elegido por el usuario
     sed -i "s/^nsteps.*/nsteps                   = ${PROD_NSTEPS}      ; ${PROD_NS} ns/" "$md_mdp"
 
-    # Reemplazar grupos de temperatura
+    # Reemplazar grupos de temperatura (tau_t se deja como está en el MDP original)
     sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$md_mdp"
-    sed -i 's/^tau_t.*/tau_t                    = 0.1     0.1/' "$md_mdp"
     sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$md_mdp"
 
     log_success "Producción configurada: $PROD_NS ns ($PROD_NSTEPS steps)"
 
     run_gmx grompp -f "$md_mdp" -c npt.gro -t npt.cpt -p topol.top \
-        -n index.ndx -o md.tpr -maxwarn 1 &> "$RUNDIR/logs/grompp_md.log"
+        -n index.ndx -o md.tpr -maxwarn "$MAXWARN" &> "$RUNDIR/logs/grompp_md.log"
+    grep -i 'WARNING' "$RUNDIR/logs/grompp_md.log" | head -5 | while read -r w; do log_warning "grompp-md: $w"; done || true
 
     log_success "Sistema preparado para producción"
     echo -e "\n${YELLOW}Ejecutando producción (esto puede tardar)...${NC}\n"
@@ -1473,7 +1526,7 @@ run_dry_run_grompp_checks() {
     link_setup_files "$RUNDIR/01_minimization"
     cp -f ../00_setup/system.gro dryrun_system.gro
     run_gmx grompp -f "$RUNDIR/mdp_used/em.mdp" -c dryrun_system.gro -p topol.top -n index.ndx \
-        -o em_dry.tpr -maxwarn 2 &> "$RUNDIR/logs/dryrun_grompp_em.log"
+        -o em_dry.tpr -maxwarn "$MAXWARN" &> "$RUNDIR/logs/dryrun_grompp_em.log"
     log_success "Dry-run grompp EM OK"
 
     # NVT
@@ -1488,11 +1541,10 @@ run_dry_run_grompp_checks() {
         sed -i 's/^define.*/define = -DPOSRES -DPOSRES_LIG/' "$nvt_mdp"
     fi
     sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$nvt_mdp"
-    sed -i 's/^tau_t.*/tau_t                    = 0.1     0.1/' "$nvt_mdp"
     sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$nvt_mdp"
 
     run_gmx grompp -f "$nvt_mdp" -c dryrun_system.gro -r dryrun_system.gro -p topol.top -n index.ndx \
-        -o nvt_dry.tpr -maxwarn 2 &> "$RUNDIR/logs/dryrun_grompp_nvt.log"
+        -o nvt_dry.tpr -maxwarn "$MAXWARN" &> "$RUNDIR/logs/dryrun_grompp_nvt.log"
     log_success "Dry-run grompp NVT OK"
 
     # NPT
@@ -1504,11 +1556,10 @@ run_dry_run_grompp_checks() {
         sed -i 's/^define.*/define = -DPOSRES -DPOSRES_LIG/' "$npt_mdp"
     fi
     sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$npt_mdp"
-    sed -i 's/^tau_t.*/tau_t                    = 0.1     0.1/' "$npt_mdp"
     sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$npt_mdp"
 
     run_gmx grompp -f "$npt_mdp" -c dryrun_system.gro -r dryrun_system.gro -p topol.top -n index.ndx \
-        -o npt_dry.tpr -maxwarn 2 &> "$RUNDIR/logs/dryrun_grompp_npt.log"
+        -o npt_dry.tpr -maxwarn "$MAXWARN" &> "$RUNDIR/logs/dryrun_grompp_npt.log"
     log_success "Dry-run grompp NPT OK"
 
     # MD producción
@@ -1519,11 +1570,10 @@ run_dry_run_grompp_checks() {
     cp "$RUNDIR/mdp_used/md_prod.mdp" "$md_mdp"
     sed -i "s/^nsteps.*/nsteps                   = ${PROD_NSTEPS}      ; ${PROD_NS} ns/" "$md_mdp"
     sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$md_mdp"
-    sed -i 's/^tau_t.*/tau_t                    = 0.1     0.1/' "$md_mdp"
     sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$md_mdp"
 
     run_gmx grompp -f "$md_mdp" -c dryrun_system.gro -p topol.top -n index.ndx \
-        -o md_dry.tpr -maxwarn 2 &> "$RUNDIR/logs/dryrun_grompp_md.log"
+        -o md_dry.tpr -maxwarn "$MAXWARN" &> "$RUNDIR/logs/dryrun_grompp_md.log"
     log_success "Dry-run grompp producción OK"
     log_warning "Dry-run activo: no se ejecutó ningún mdrun"
 }
@@ -1711,6 +1761,47 @@ run_analysis() {
         -on contacts_prot_lig.xvg -d 0.4 -group -tu ns \
         &> "$RUNDIR/logs/analysis_contacts.log"
     log_success "Contactos por residuo: contacts_prot_lig.xvg"
+
+    # ==========================================
+    # ANÁLISIS EXTENDIDO v4.0
+    # ==========================================
+    echo -e "\n${YELLOW}Análisis extendido v4.0...${NC}"
+
+    # 8. Energía de interacción proteína-ligando (Coulomb + LJ)
+    echo -e "\n${YELLOW}Calculando energía de interacción proteína-ligando...${NC}"
+    echo "Coul-SR:Protein-LIG LJ-SR:Protein-LIG" | \
+        run_gmx energy -f md.edr -o interaction_energy.xvg \
+        &> "$RUNDIR/logs/analysis_interaction_energy.log" 2>&1 || true
+    if [ -f "interaction_energy.xvg" ]; then
+        log_success "Energía de interacción: interaction_energy.xvg"
+    else
+        log_warning "No se pudo extraer energía de interacción (grupos de energía no disponibles en MDP)"
+    fi
+
+    # 9. Contactos nativos (fraction of native contacts - Q)
+    echo "Protein LIG" | run_gmx mindist -s tpr_nowat.tpr -f md_clean_nowat.xtc \
+        -od native_contacts_dist.xvg -d 0.45 -tu ns \
+        &> "$RUNDIR/logs/analysis_native_contacts.log" 2>&1 || true
+    log_success "Contactos nativos (d<0.45nm): native_contacts_dist.xvg"
+
+    # 10. Convergencia: RMSD block averaging (evaluación de equilibrio)
+    echo -e "\n${YELLOW}Evaluando convergencia...${NC}"
+    if [ -f "rmsd_backbone.xvg" ]; then
+        # Generar RMSD de segunda mitad vs primera mitad para evaluar convergencia
+        local total_frames
+        total_frames=$(grep -cv '^[#@]' rmsd_backbone.xvg || echo 0)
+        local half_frame=$(( total_frames / 2 ))
+        if [ "$half_frame" -gt 10 ]; then
+            local half_time
+            half_time=$(grep -v '^[#@]' rmsd_backbone.xvg | awk -v hf="$half_frame" 'NR==hf {print $1; exit}')
+            if [ -n "$half_time" ]; then
+                echo "Backbone Backbone" | run_gmx rms -s tpr_nowat.tpr -f md_clean_nowat.xtc \
+                    -o rmsd_backbone_2ndhalf.xvg -tu ns -b "$half_time" \
+                    &> "$RUNDIR/logs/analysis_rmsd_convergence.log" 2>&1 || true
+                log_success "RMSD segunda mitad: rmsd_backbone_2ndhalf.xvg (evaluación convergencia)"
+            fi
+        fi
+    fi
 }
 
 #==========================================

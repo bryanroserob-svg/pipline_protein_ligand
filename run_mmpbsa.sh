@@ -1,10 +1,11 @@
 #!/bin/bash
-set -euo pipefail
+set -Eeuo pipefail
 
 #==========================================
 # MM-PB(GB)SA ANÁLISIS DE ENERGÍA LIBRE
 # Requiere: gmx_MMPBSA, AmberTools, GROMACS
 # Uso: ./run_mmpbsa.sh [directorio_corrida_MD]
+#      ./run_mmpbsa.sh --rundir DIR --calc TYPE [flags]
 #==========================================
 
 #==========================================
@@ -18,6 +19,17 @@ readonly CYAN='\033[0;36m'
 readonly NC='\033[0m'
 
 CURRENT_STAGE="inicialización"
+
+# CLI inputs for non-interactive mode
+INPUT_RUNDIR=""
+INPUT_CALC_TYPE=""
+INPUT_INTERVAL=""
+INPUT_SALT=""
+INPUT_IGB=""
+INPUT_RECEPTOR=""
+INPUT_LIGAND=""
+INPUT_ENTROPY=false
+NON_INTERACTIVE=false
 
 #==========================================
 # FUNCIONES AUXILIARES
@@ -36,13 +48,78 @@ log_info()    { echo -e "${CYAN}ℹ${NC} $1"; }
 
 cleanup_on_error() {
     local exit_code=$?
+    trap - ERR
     if [ $exit_code -ne 0 ]; then
         echo ""
         log_error "Script interrumpido durante: ${CURRENT_STAGE}"
         log_warning "Revisa los logs en: ${MMPBSA_DIR:-desconocido}/"
     fi
 }
-trap cleanup_on_error EXIT
+trap 'cleanup_on_error' ERR
+trap 'cleanup_on_error' EXIT
+
+print_mmpbsa_usage() {
+    cat <<EOF
+Uso:
+  $0 [directorio_corrida_MD]
+  $0 --rundir DIR --calc TYPE [flags]
+
+Opciones (modo no interactivo):
+  --rundir DIR          Directorio de la corrida MD
+  --calc TYPE           Tipo: gb_only|pb_only|gb_pb|gb_decomp|gb_pb_decomp
+  --interval N          Intervalo de frames (default: 5)
+  --salt M              Concentración salina en M (default: 0.150)
+  --igb N               Modelo GB: 1|2|5|7|8 (default: 5)
+  --receptor IDX        Índice del grupo receptor
+  --ligand IDX          Índice del grupo ligando
+  --entropy             Incluir cálculo de entropía (Normal Mode Analysis)
+  --help, -h            Mostrar esta ayuda
+EOF
+}
+
+parse_mmpbsa_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --rundir)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --rundir"; exit 1; }
+                INPUT_RUNDIR="$2"; shift 2 ;;
+            --calc)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --calc"; exit 1; }
+                INPUT_CALC_TYPE="$2"; shift 2 ;;
+            --interval)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --interval"; exit 1; }
+                INPUT_INTERVAL="$2"; shift 2 ;;
+            --salt)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --salt"; exit 1; }
+                INPUT_SALT="$2"; shift 2 ;;
+            --igb)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --igb"; exit 1; }
+                INPUT_IGB="$2"; shift 2 ;;
+            --receptor)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --receptor"; exit 1; }
+                INPUT_RECEPTOR="$2"; shift 2 ;;
+            --ligand)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --ligand"; exit 1; }
+                INPUT_LIGAND="$2"; shift 2 ;;
+            --entropy)
+                INPUT_ENTROPY=true; shift ;;
+            --help|-h)
+                print_mmpbsa_usage; exit 0 ;;
+            *)
+                # Legacy positional argument
+                if [ -z "$INPUT_RUNDIR" ] && [ -d "$1" ]; then
+                    INPUT_RUNDIR="$1"
+                fi
+                shift ;;
+        esac
+    done
+
+    # Check if enough args for non-interactive
+    if [ -n "$INPUT_RUNDIR" ] && [ -n "$INPUT_CALC_TYPE" ] && \
+       [ -n "$INPUT_RECEPTOR" ] && [ -n "$INPUT_LIGAND" ]; then
+        NON_INTERACTIVE=true
+    fi
+}
 
 #==========================================
 # ACTIVACIÓN DE ENTORNO CONDA
@@ -314,9 +391,11 @@ detect_index_groups() {
     local index_file="$RUNDIR/00_setup/index.ndx"
 
     # Listar grupos disponibles
+    local tmp_ndx
+    tmp_ndx=$(mktemp /tmp/gmxmmpbsa_ndx_XXXXXX.ndx)
     groups_output=$(echo q | "$GMX" make_ndx -f "$RUNDIR/03_production/md.tpr" \
-        -n "$index_file" -o /tmp/_gmxmmpbsa_tmp_index.ndx 2>&1 || true)
-    rm -f /tmp/_gmxmmpbsa_tmp_index.ndx
+        -n "$index_file" -o "$tmp_ndx" 2>&1 || true)
+    rm -f "$tmp_ndx"
 
     echo "$groups_output" | grep "^ *[0-9]"
     echo ""
@@ -326,9 +405,9 @@ detect_index_groups() {
     local ligand_idx=""
 
     # Buscar grupo "Protein" (normalmente índice 1)
-    protein_idx=$(echo "$groups_output" | grep -oP '^\s*\K\d+(?=\s+Protein\s)' | head -1)
+    protein_idx=$(echo "$groups_output" | awk '/Protein[[:space:]]/ && /^[[:space:]]*[0-9]/ {print $1; exit}')
     # Buscar grupo con "LIG" en el nombre
-    ligand_idx=$(echo "$groups_output" | grep -oP '^\s*\K\d+(?=\s+LIG\s)' | head -1)
+    ligand_idx=$(echo "$groups_output" | awk '/LIG[[:space:]]/ && /^[[:space:]]*[0-9]/ {print $1; exit}')
 
     if [ -n "$protein_idx" ] && [ -n "$ligand_idx" ]; then
         log_success "Auto-detectados: Proteína = grupo $protein_idx, Ligando = grupo $ligand_idx"
@@ -472,6 +551,17 @@ EOF
         log_success "Sección de descomposición añadida (residuos dentro de 10 Å)"
     fi
 
+    # Sección entropía (Normal Mode Analysis)
+    if [ "$INPUT_ENTROPY" = true ]; then
+        cat >> "$mmpbsa_in" <<EOF
+&nmode
+nmstartframe=1, nmendframe=100, nminterval=10,
+maxcyc=10000, drms=0.001,
+/
+EOF
+        log_success "Sección de entropía añadida (Normal Mode Analysis)"
+    fi
+
     echo ""
     log_info "Archivo generado: $mmpbsa_in"
     echo "--- Contenido ---"
@@ -606,10 +696,42 @@ main() {
     echo -e "${BLUE}  Energía libre de unión proteína-ligando${NC}"
     echo -e "${BLUE}=========================================${NC}\n"
 
+    parse_mmpbsa_args "$@"
     validate_dependencies
-    select_run_directory "${1:-}"
-    select_calculation_type
-    detect_index_groups
+
+    if [ "$NON_INTERACTIVE" = true ]; then
+        # Non-interactive mode
+        RUNDIR="$(cd "$INPUT_RUNDIR" && pwd)"
+        log_success "Directorio: $RUNDIR"
+
+        # Validate files
+        for f in "$RUNDIR/03_production/md.tpr" "$RUNDIR/03_production/md.xtc" \
+                 "$RUNDIR/00_setup/topol.top" "$RUNDIR/00_setup/index.ndx"; do
+            [ -f "$f" ] || { log_error "Archivo no encontrado: $f"; exit 1; }
+        done
+
+        CALC_TYPE="$INPUT_CALC_TYPE"
+        case "$CALC_TYPE" in
+            gb_only) CALC_DESC="GB solamente" ;;
+            pb_only) CALC_DESC="PB solamente" ;;
+            gb_pb) CALC_DESC="GB + PB" ;;
+            gb_decomp) CALC_DESC="GB + Descomposición por residuo" ;;
+            gb_pb_decomp) CALC_DESC="GB + PB + Descomposición" ;;
+            *) log_error "Tipo de cálculo inválido: $CALC_TYPE"; exit 1 ;;
+        esac
+
+        FRAME_INTERVAL="${INPUT_INTERVAL:-5}"
+        SALT_CONC="${INPUT_SALT:-0.150}"
+        IGB="${INPUT_IGB:-5}"
+        GRP_RECEPTOR="$INPUT_RECEPTOR"
+        GRP_LIGAND="$INPUT_LIGAND"
+
+        log_success "Modo no interactivo: $CALC_DESC"
+    else
+        select_run_directory "${INPUT_RUNDIR:-${1:-}}"
+        select_calculation_type
+        detect_index_groups
+    fi
 
     # Crear directorio de trabajo
     MMPBSA_DIR="$RUNDIR/05_mmpbsa_$(date +%Y%m%d_%H%M%S)"

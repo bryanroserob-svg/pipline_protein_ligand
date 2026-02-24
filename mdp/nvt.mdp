@@ -5,7 +5,7 @@
 ; PARÁMETROS DE INTEGRACIÓN
 integrator               = md
 dt                       = 0.002
-nsteps                   = 50000        ; 100 ps
+nsteps                   = 500000       ; 1 ns
 comm-mode                = Linear
 nstcomm                  = 100
 
