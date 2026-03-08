@@ -1,0 +1,45 @@
+name: CI pipline_protein_ligand
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Instalar dependencias Python
+      run: |
+        python -m pip install --upgrade pip
+        pip install numpy matplotlib pytest
+
+    - name: Validar sintaxis Bash
+      run: |
+        bash -n md_pipeline_mejorado.sh
+        bash -n run_mmpbsa.sh
+
+    - name: Compilar scripts Python
+      run: python -m py_compile plot_analysis.py
+
+    - name: Verificar ausencia de merge conflicts
+      run: |
+        if grep -rn '<<<<<<< ' *.py *.sh README*.md 2>/dev/null; then
+          echo "::error::Merge conflicts detectados"
+          exit 1
+        fi
+
+    - name: Ejecutar tests unitarios
+      run: python -m pytest tests/ -v

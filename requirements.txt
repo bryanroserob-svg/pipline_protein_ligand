@@ -1,0 +1,6 @@
+# pipline_protein_ligand Python dependencies
+numpy>=1.20
+matplotlib>=3.3
+
+# External tools (not pip-installable):
+#   - GROMACS >= 2021

@@ -1,0 +1,28 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*.class
+*.pyo
+
+# Eggs
+*.egg-info/
+*.egg
+.eggs/
+
+# Editor / OS
+*~
+\#*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Simulation outputs (uncomment as needed)
+# *.xtc
+# *.trr
+# *.edr
+# *.tpr
+# *.cpt
