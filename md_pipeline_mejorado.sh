@@ -1,6 +1,7 @@
 #!/bin/bash
 set -Eeuo pipefail
 
+# GROMACS MD Pipeline Automatizado v4.5 (Proteína + Ligando)
 #==========================================
 # CONFIGURACIÓN
 #==========================================
@@ -8,6 +9,7 @@ NT=""
 GMX=""
 USE_MPI=false
 MDRUN=""
+GPU_ID=""
 
 readonly BASE_PROT=proteinas
 readonly BASE_LIG=ligandos
@@ -37,6 +39,8 @@ RESUME_MODE=false
 RESUME_FROM=1
 DRY_RUN=false
 SHOW_HELP=false
+ANALYSIS_ONLY=false
+EXTEND_NS=""
 TEMP_FILES=()
 
 # Parámetros opcionales para modo no interactivo
@@ -50,6 +54,7 @@ INPUT_ION_CONC=""
 INPUT_PROD_NS=""
 INPUT_NT=""
 INPUT_MAXWARN=""
+INPUT_GPU_ID=""
 
 #==========================================
 # FUNCIONES AUXILIARES
@@ -114,6 +119,12 @@ init_gmx() {
         MDRUN="$GMX mdrun"
     else
         MDRUN="$GMX mdrun -nt $NT"
+    fi
+
+    # GPU support (v4.5)
+    if [ -n "$GPU_ID" ]; then
+        MDRUN="$MDRUN -gpu_id $GPU_ID"
+        log_info "GPU seleccionada: gpu_id=$GPU_ID"
     fi
 }
 
@@ -344,6 +355,9 @@ Opciones:
   --prod-ns <ns>          Tiempo de producción en ns (acepta decimales, default: 10)
   --nthreads <N>          Número de threads para mdrun (default: auto)
   --maxwarn <N>           Máximo de warnings para grompp (default: 1)
+  --gpu-id <N>            ID de GPU para mdrun (default: auto-detección)
+  --extend <ns>           Extender simulación existente por N ns adicionales
+  --analysis-only <dir>   Re-ejecutar solo el análisis sobre una corrida existente
   --config <archivo>      Archivo KEY=VALUE (sin espacios)
   --non-interactive       Fuerza ejecución sin prompts
   --dry-run               Ejecuta preparación + grompp, sin mdrun
@@ -353,6 +367,16 @@ Opciones:
 Modo no interactivo automático:
   Si pasas --prot --lig --ff el pipeline entra en modo no interactivo.
   Si faltan obligatorios y NO usas --non-interactive, hace fallback a prompts.
+
+Ejemplos v4.5:
+  # Usar GPU específica:
+  $0 --prot caspasa9 --lig M4-A --ff charmm36-jul2022.ff --gpu-id 0
+
+  # Extender simulación existente 50 ns:
+  $0 --extend 50 --resume
+
+  # Re-ejecutar análisis sobre corrida anterior:
+  $0 --analysis-only MD_RUN/caspasa9_M4-A_20260224_120000
 
 Formato de --config:
   PROT=caspasa9
@@ -365,6 +389,7 @@ Formato de --config:
   PROD_NS=50
   NT=16
   MAXWARN=1
+  GPU_ID=0
 EOF
 }
 
@@ -391,6 +416,7 @@ load_config_file() {
             PROD_NS) INPUT_PROD_NS="$value" ;;
             NT) INPUT_NT="$value" ;;
             MAXWARN) INPUT_MAXWARN="$value" ;;
+            GPU_ID) INPUT_GPU_ID="$value" ;;
             "") ;;
             *) log_warning "Clave desconocida en config: $key (ignorada)" ;;
         esac
@@ -468,6 +494,22 @@ parse_args() {
                 INPUT_MAXWARN="$2"
                 shift 2
                 ;;
+            --gpu-id)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --gpu-id"; exit 1; }
+                INPUT_GPU_ID="$2"
+                shift 2
+                ;;
+            --extend)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --extend"; exit 1; }
+                EXTEND_NS="$2"
+                shift 2
+                ;;
+            --analysis-only)
+                [ -n "${2:-}" ] || { log_error "Falta directorio para --analysis-only"; exit 1; }
+                ANALYSIS_ONLY=true
+                ANALYSIS_ONLY_DIR="$2"
+                shift 2
+                ;;
             --help|-h)
                 SHOW_HELP=true
                 shift
@@ -537,6 +579,16 @@ validate_runtime_parameters() {
     if ! is_int "$MAXWARN" || [ "$MAXWARN" -lt 0 ]; then
         log_error "MAXWARN inválido: '$MAXWARN'. Debe ser entero >= 0"
         exit 1
+    fi
+
+    # Aplicar GPU_ID si fue proporcionado (v4.5)
+    if [ -n "${INPUT_GPU_ID:-}" ]; then
+        if is_int "$INPUT_GPU_ID" && [ "$INPUT_GPU_ID" -ge 0 ]; then
+            GPU_ID="$INPUT_GPU_ID"
+        else
+            log_error "GPU_ID inválido: '$INPUT_GPU_ID'. Debe ser entero >= 0"
+            exit 1
+        fi
     fi
 }
 
@@ -954,7 +1006,50 @@ apply_non_interactive_inputs() {
     log_info "  WATER_MODEL=$WATER_MODEL"
     log_info "  ION_CONC=$ION_CONC"
     log_info "  PROD_NS=$PROD_NS"
+    [ -n "$GPU_ID" ] && log_info "  GPU_ID=$GPU_ID"
     [ "$DRY_RUN" = true ] && log_info "  MODO=DRY-RUN (sin mdrun)"
+}
+
+#==========================================
+# VALIDACIÓN DE INTEGRIDAD DEL LIGANDO (v4.5)
+#==========================================
+validate_ligand_files() {
+    log_step "Validando integridad de archivos del ligando (v4.5)"
+
+    local lig_gro="$INITIAL_DIR/$BASE_LIG/$LIG/ligando.gro"
+    local lig_itp="$INITIAL_DIR/$BASE_LIG/$LIG/ligando.itp"
+
+    # Verificar que el .gro contiene residuo LIG
+    if ! grep -q 'LIG' "$lig_gro"; then
+        log_error "ligando.gro no contiene residuo 'LIG'. Verifica la parametrización."
+        log_info "Tip: el residuo del ligando debe llamarse 'LIG' en el archivo .gro"
+        exit 1
+    fi
+    log_success "ligando.gro contiene residuo LIG"
+
+    # Contar átomos pesados en .gro (línea 2 = número total de átomos)
+    local natoms_gro
+    natoms_gro=$(sed -n '2p' "$lig_gro" | awk '{print $1}')
+    if [ -z "$natoms_gro" ] || ! is_int "$natoms_gro" || [ "$natoms_gro" -lt 1 ]; then
+        log_error "ligando.gro tiene formato inválido: no se pudo leer número de átomos"
+        exit 1
+    fi
+
+    # Contar átomos en .itp (sección [ atoms ])
+    local natoms_itp
+    natoms_itp=$(awk '
+        /^\[/ { in_atoms=0 }
+        /^\[[[:space:]]*atoms[[:space:]]*\]/ { in_atoms=1; next }
+        in_atoms && /^[[:space:]]*[0-9]/ { count++ }
+        END { print count+0 }
+    ' "$lig_itp")
+
+    if [ "$natoms_gro" -ne "$natoms_itp" ]; then
+        log_error "Inconsistencia: ligando.gro tiene $natoms_gro átomos, ligando.itp tiene $natoms_itp"
+        log_info "Regenera los archivos del ligando con CGenFF/GAFF2"
+        exit 1
+    fi
+    log_success "Consistencia .gro/.itp verificada: $natoms_gro átomos"
 }
 
 #==========================================
@@ -1506,6 +1601,16 @@ run_production() {
     sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$md_mdp"
     sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$md_mdp"
 
+    # v4.5: Inyectar grupos de energía automáticamente para análisis de interacción
+    if ! grep -q '^energygrps' "$md_mdp"; then
+        echo '' >> "$md_mdp"
+        echo '; GRUPOS DE ENERGÍA (v4.5: inyectado automáticamente)' >> "$md_mdp"
+        echo 'energygrps               = Protein LIG' >> "$md_mdp"
+        log_success "energygrps = Protein LIG inyectado automáticamente (v4.5)"
+    else
+        log_info "energygrps ya definido en MDP, no se modifica"
+    fi
+
     log_success "Producción configurada: $PROD_NS ns ($PROD_NSTEPS steps)"
 
     run_gmx grompp -f "$md_mdp" -c npt.gro -t npt.cpt -p topol.top \
@@ -1515,8 +1620,146 @@ run_production() {
     log_success "Sistema preparado para producción"
     echo -e "\n${YELLOW}Ejecutando producción (esto puede tardar)...${NC}\n"
 
+    # v4.5: Monitor de progreso con ETA
+    monitor_mdrun "$RUNDIR/logs/mdrun_md.log" "$PROD_NS" &
+    local monitor_pid=$!
+
     $MDRUN -deffnm md &> "$RUNDIR/logs/mdrun_md.log"
+
+    # Terminar monitor
+    kill $monitor_pid 2>/dev/null || true
+    wait $monitor_pid 2>/dev/null || true
+    echo ""
     log_success "Simulación de producción completada"
+}
+
+#==========================================
+# MONITOR DE PROGRESO CON ETA (v4.5)
+#==========================================
+monitor_mdrun() {
+    local log_file="$1"
+    local total_ns="$2"
+    local total_ps
+    total_ps=$(awk "BEGIN{printf \"%d\", $total_ns * 1000}")
+
+    sleep 10  # Esperar a que mdrun genere output
+
+    while true; do
+        if [ ! -f "$log_file" ]; then
+            sleep 15
+            continue
+        fi
+
+        # Extraer el último paso completado del log
+        local current_step
+        current_step=$(tail -50 "$log_file" 2>/dev/null | awk '/^[[:space:]]*step[[:space:]]+[0-9]/{step=$2} /Step[[:space:]]+Time/{getline; if($1 ~ /^[0-9]/) step=$1} END{print step+0}' 2>/dev/null || echo 0)
+
+        if [ "$current_step" -gt 0 ] && [ "$total_ps" -gt 0 ]; then
+            local current_ps
+            current_ps=$(awk "BEGIN{printf \"%.0f\", $current_step * 0.002}")
+            local pct
+            pct=$(awk "BEGIN{printf \"%.1f\", ($current_ps / $total_ps) * 100}")
+
+            # ETA basado en tiempo transcurrido
+            local elapsed
+            elapsed=$(awk '/Performance:/{t=$2} END{if(t) print t+0; else print 0}' "$log_file" 2>/dev/null || echo 0)
+
+            printf "\r  ${CYAN}⏳ Progreso: %.1f%% (%s / %s ps)${NC}" "$pct" "$current_ps" "$total_ps"
+        fi
+
+        sleep 30
+    done
+}
+
+#==========================================
+# EXTENDER SIMULACIÓN (v4.5)
+#==========================================
+extend_simulation() {
+    log_step "Extendiendo simulación por $EXTEND_NS ns adicionales"
+
+    cd "$RUNDIR/03_production" || exit 1
+
+    if [ ! -f "md.tpr" ]; then
+        log_error "No se encontró md.tpr en 03_production/. ¿Se completó la producción original?"
+        exit 1
+    fi
+
+    if [ ! -f "md.cpt" ]; then
+        log_error "No se encontró md.cpt en 03_production/. No se puede extender sin checkpoint."
+        exit 1
+    fi
+
+    local extend_ps
+    extend_ps=$(awk "BEGIN{printf \"%d\", $EXTEND_NS * 1000}")
+
+    # Extender el TPR
+    run_gmx convert-tpr -s md.tpr -extend "$extend_ps" -o md_extended.tpr \
+        &> "$RUNDIR/logs/extend_tpr.log"
+    mv md.tpr md_original.tpr
+    mv md_extended.tpr md.tpr
+    log_success "TPR extendido por $EXTEND_NS ns ($extend_ps ps)"
+
+    # Continuar la simulación
+    echo -e "\n${YELLOW}Continuando simulación extendida...${NC}\n"
+
+    $MDRUN -deffnm md -cpi md.cpt -noappend \
+        &> "$RUNDIR/logs/mdrun_extend.log"
+    log_success "Simulación extendida completada"
+
+    # Concatenar trayectorias si se usó -noappend
+    if ls md.part*.xtc &>/dev/null; then
+        run_gmx trjcat -f md.part*.xtc -o md_full.xtc -cat \
+            &> "$RUNDIR/logs/trjcat_extend.log"
+        mv md.xtc md_original.xtc 2>/dev/null || true
+        mv md_full.xtc md.xtc
+        log_success "Trayectorias concatenadas: md.xtc (completa)"
+    fi
+}
+
+#==========================================
+# MODO ANÁLISIS-ONLY (v4.5)
+#==========================================
+run_analysis_only() {
+    log_step "Modo analysis-only: re-ejecutando análisis sobre corrida existente"
+
+    RUNDIR=$(cd "$ANALYSIS_ONLY_DIR" && pwd)
+
+    if [ ! -d "$RUNDIR/03_production" ]; then
+        log_error "Directorio no es una corrida MD válida: falta 03_production/"
+        exit 1
+    fi
+
+    if [ ! -f "$RUNDIR/03_production/md.tpr" ] || [ ! -f "$RUNDIR/03_production/md.xtc" ]; then
+        log_error "Faltan archivos de producción (md.tpr, md.xtc)"
+        exit 1
+    fi
+
+    # Crear/recrear directorio de análisis
+    mkdir -p "$RUNDIR/04_analysis"
+    mkdir -p "$RUNDIR/logs"
+
+    # Detectar GROMACS y FF
+    FF_DIR=$(sed -n 's#.*"\./\([^/]*\.ff\)/.*#\1#p' "$RUNDIR/00_setup/topol.top" 2>/dev/null | head -1 || echo "")
+    FF_IS_LOCAL=false
+    if [ -n "$FF_DIR" ] && [ -d "$RUNDIR/00_setup/$FF_DIR" ]; then
+        FF_IS_LOCAL=true
+    fi
+
+    # Leer info del checkpoint si existe
+    if [ -f "$RUNDIR/.checkpoint" ]; then
+        PROT=$(extract_checkpoint_value "$RUNDIR/.checkpoint" "PROT")
+        LIG=$(extract_checkpoint_value "$RUNDIR/.checkpoint" "LIG")
+    else
+        PROT=$(basename "$RUNDIR" | cut -d'_' -f1)
+        LIG=$(basename "$RUNDIR" | cut -d'_' -f2)
+    fi
+
+    log_success "Corrida detectada: $PROT + $LIG"
+    log_success "Directorio: $RUNDIR"
+
+    run_analysis
+    log_step "Análisis re-ejecutado con éxito"
+    echo -e "${GREEN}Resultados en: $RUNDIR/04_analysis/${NC}\n"
 }
 
 run_dry_run_grompp_checks() {
@@ -2038,7 +2281,7 @@ run_step() {
 main() {
     RESUME_MODE=false
     RESUME_FROM=1
-    TOTAL_STEPS=13
+    TOTAL_STEPS=14
 
     parse_args "$@"
 
@@ -2050,10 +2293,28 @@ main() {
     init_gmx
     validate_dependencies
 
+    # v4.5: Modo analysis-only (re-ejecutar análisis sobre corrida existente)
+    if [ "$ANALYSIS_ONLY" = true ]; then
+        run_analysis_only
+        exit 0
+    fi
+
     # Modo resume
     if [ "$RESUME_MODE" = true ]; then
         log_step "Modo RESUME activado"
         find_checkpoints
+
+        # v4.5: Si se pidió extend junto con resume
+        if [ -n "$EXTEND_NS" ]; then
+            extend_simulation
+            # Re-ejecutar análisis después de extender
+            run_step 12 "Análisis post-producción"     run_analysis
+            run_step 13 "Generar resumen"              generate_summary
+            save_checkpoint "$TOTAL_STEPS" "COMPLETADO"
+            log_step "¡EXTENSIÓN + ANÁLISIS FINALIZADOS CON ÉXITO!"
+            echo -e "${GREEN}Todos los resultados en: $RUNDIR${NC}\n"
+            exit 0
+        fi
     fi
 
     if [ "$RESUME_MODE" = false ]; then
@@ -2063,30 +2324,32 @@ main() {
     fi
 
     if [ "$DRY_RUN" = true ]; then
-        TOTAL_STEPS=9
-        run_step 1 "Copiar archivos"                setup_initial_files
-        run_step 2 "Restraints del ligando"         generate_ligand_restraints
-        run_step 3 "Actualizar topología"           update_topology
-        run_step 4 "Ensamblar complejo"             build_complex
-        run_step 5 "Solvatar sistema"               solvate_system
-        run_step 6 "Neutralizar sistema"            neutralize_system
-        run_step 7 "Crear grupos de índice"         create_index_groups
-        run_step 8 "Validar grompp (dry-run)"       run_dry_run_grompp_checks
-        run_step 9 "Generar resumen"                generate_summary
+        TOTAL_STEPS=10
+        run_step 1  "Copiar archivos"                setup_initial_files
+        run_step 2  "Validar ligando (v4.5)"         validate_ligand_files
+        run_step 3  "Restraints del ligando"         generate_ligand_restraints
+        run_step 4  "Actualizar topología"           update_topology
+        run_step 5  "Ensamblar complejo"             build_complex
+        run_step 6  "Solvatar sistema"               solvate_system
+        run_step 7  "Neutralizar sistema"            neutralize_system
+        run_step 8  "Crear grupos de índice"         create_index_groups
+        run_step 9  "Validar grompp (dry-run)"       run_dry_run_grompp_checks
+        run_step 10 "Generar resumen"                generate_summary
     else
         run_step 1  "Copiar archivos"              setup_initial_files
-        run_step 2  "Restraints del ligando"       generate_ligand_restraints
-        run_step 3  "Actualizar topología"         update_topology
-        run_step 4  "Ensamblar complejo"           build_complex
-        run_step 5  "Solvatar sistema"             solvate_system
-        run_step 6  "Neutralizar sistema"          neutralize_system
-        run_step 7  "Crear grupos de índice"       create_index_groups
-        run_step 8  "Minimización de energía"      run_minimization
-        run_step 9  "Equilibración NVT"            run_nvt_equilibration
-        run_step 10 "Equilibración NPT"            run_npt_equilibration
-        run_step 11 "Producción"                   run_production
-        run_step 12 "Análisis post-producción"     run_analysis
-        run_step 13 "Generar resumen"              generate_summary
+        run_step 2  "Validar ligando (v4.5)"       validate_ligand_files
+        run_step 3  "Restraints del ligando"       generate_ligand_restraints
+        run_step 4  "Actualizar topología"         update_topology
+        run_step 5  "Ensamblar complejo"           build_complex
+        run_step 6  "Solvatar sistema"             solvate_system
+        run_step 7  "Neutralizar sistema"          neutralize_system
+        run_step 8  "Crear grupos de índice"       create_index_groups
+        run_step 9  "Minimización de energía"      run_minimization
+        run_step 10 "Equilibración NVT"            run_nvt_equilibration
+        run_step 11 "Equilibración NPT"            run_npt_equilibration
+        run_step 12 "Producción"                   run_production
+        run_step 13 "Análisis post-producción"     run_analysis
+        run_step 14 "Generar resumen"              generate_summary
     fi
 
     # Marcar como completado

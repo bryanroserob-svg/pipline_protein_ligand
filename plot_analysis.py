@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-Generador automático de gráficas de análisis MD v4.0.
+Generador automático de gráficas de análisis MD v4.5.
 Lee archivos .xvg de una corrida MD y genera un PDF con todas las figuras.
+
+Novedades v4.5:
+  - Mapa de contactos por residuo (heatmap dinámico)
+  - Running average en series de tiempo
+  - Histograma de distribución de H-bonds
+  - Reporte HTML con --format html
+  - Exportación CSV de estadísticas (statistics_summary.csv)
 
 Novedades v4.0:
   - CLI flags: --format, --output-dir, --no-pca, --no-dccm
@@ -15,12 +22,16 @@ Novedades v4.0:
 Uso:
     python3 plot_analysis.py                          # Menú interactivo
     python3 plot_analysis.py MD_RUN/mi_corrida/       # Directo
+    python3 plot_analysis.py MD_RUN/mi_corrida/ --format html
     python3 plot_analysis.py --help                   # Mostrar opciones
 """
 
 import sys
 import os
 import re
+import csv
+import base64
+import io
 import argparse
 import numpy as np
 from pathlib import Path
@@ -94,17 +105,33 @@ def parse_xvg(filepath):
 # ==========================================
 # FUNCIONES DE PLOT
 # ==========================================
-def plot_timeseries(ax, data, title, xlabel, ylabel, legends=None, color=None):
+def plot_timeseries(ax, data, title, xlabel, ylabel, legends=None, color=None,
+                    running_avg_window=None):
     if data is None or len(data) == 0:
         return
     x = data[:, 0]
     if data.shape[1] == 2:
-        ax.plot(x, data[:, 1], color=color or C['blue'], alpha=0.85)
+        ax.plot(x, data[:, 1], color=color or C['blue'], alpha=0.55, linewidth=0.8)
+        # v4.5: Running average overlay
+        if running_avg_window and len(x) > running_avg_window:
+            ravg = compute_running_average(data[:, 1], running_avg_window)
+            ax.plot(x, ravg, color=color or C['blue'], alpha=1.0, linewidth=1.8,
+                    label=f'Media móvil ({running_avg_window} pts)')
+            ax.legend(fontsize=9, framealpha=0.8)
     else:
         cols = list(C.values())
         for i in range(1, min(data.shape[1], 7)):
             lab = legends[i-1] if legends and len(legends) >= i else f"Col {i}"
-            ax.plot(x, data[:, i], color=cols[(i-1) % len(cols)], alpha=0.85, label=lab)
+            ax.plot(x, data[:, i], color=cols[(i-1) % len(cols)], alpha=0.55,
+                    linewidth=0.8)
+            # v4.5: Running average per column
+            if running_avg_window and len(x) > running_avg_window:
+                ravg = compute_running_average(data[:, i], running_avg_window)
+                ax.plot(x, ravg, color=cols[(i-1) % len(cols)], alpha=1.0,
+                        linewidth=1.8, label=lab)
+            else:
+                ax.plot(x, data[:, i], color=cols[(i-1) % len(cols)], alpha=0.85,
+                        label=lab)
         ax.legend(fontsize=9, framealpha=0.8)
     ax.set_title(title)
     ax.set_xlabel(xlabel)
@@ -357,6 +384,176 @@ def generate_summary_table(stats_dict):
 
 
 # ==========================================
+# NUEVAS FUNCIONES v4.5
+# ==========================================
+def compute_running_average(y, window):
+    """Calcula media móvil (running average) con ventana dada."""
+    if len(y) < window:
+        return y
+    kernel = np.ones(window) / window
+    ravg = np.convolve(y, kernel, mode='same')
+    half = window // 2
+    for i in range(half):
+        ravg[i] = np.mean(y[:i+half+1])
+        ravg[-(i+1)] = np.mean(y[-(i+half+1):])
+    return ravg
+
+
+def plot_contact_heatmap(filepath):
+    """Genera heatmap de contactos residuo vs tiempo desde contacts_prot_lig.xvg.
+    Retorna (fig, True) o (None, False)."""
+    data, title, xlabel, ylabel, legends = parse_xvg(filepath)
+    if data is None or data.shape[1] < 3:
+        return None, False
+
+    times = data[:, 0]
+    contacts = data[:, 1:]
+    n_residues = contacts.shape[1]
+
+    if n_residues < 2:
+        return None, False
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    im = ax.imshow(contacts.T, aspect='auto', origin='lower',
+                   extent=[times[0], times[-1], 0, n_residues],
+                   cmap='YlOrRd', interpolation='nearest')
+    cbar = plt.colorbar(im, ax=ax, shrink=0.85, pad=0.02)
+    cbar.set_label('Número de contactos', fontsize=11)
+    ax.set_title('Mapa de Contactos Proteína-Ligando por Residuo (v4.5)',
+                 fontsize=13, fontweight='bold')
+    ax.set_xlabel(xlabel or 'Tiempo (ns)', fontsize=11)
+    ax.set_ylabel('Residuo', fontsize=11)
+
+    if legends:
+        tick_positions = list(range(0, n_residues, max(1, n_residues // 20)))
+        tick_labels = [legends[i] if i < len(legends) else str(i)
+                       for i in tick_positions]
+        ax.set_yticks(tick_positions)
+        ax.set_yticklabels(tick_labels, fontsize=7)
+
+    fig.tight_layout()
+    return fig, True
+
+
+def plot_hbond_histogram(filepath):
+    """Genera histograma de distribución de H-bonds. Retorna (fig, True) o (None, False)."""
+    data, _, _, _, _ = parse_xvg(filepath)
+    if data is None or data.shape[1] < 2:
+        return None, False
+
+    hbonds = data[:, 1]
+    max_hb = int(np.max(hbonds)) + 1
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Panel izquierdo: Histograma
+    ax1 = axes[0]
+    bins = np.arange(-0.5, max_hb + 1.5, 1)
+    ax1.hist(hbonds, bins=bins, color=C['blue'], alpha=0.7, edgecolor='white',
+             density=True)
+    ax1.set_title('Distribución de H-bonds Prot-Lig', fontweight='bold')
+    ax1.set_xlabel('Número de H-bonds')
+    ax1.set_ylabel('Fracción del tiempo')
+    ax1.axvline(np.mean(hbonds), color=C['red'], linestyle='--',
+                label=f'Media: {np.mean(hbonds):.1f}')
+    ax1.legend(fontsize=9)
+
+    # Panel derecho: Fracción acumulada
+    ax2 = axes[1]
+    thresholds = range(1, min(max_hb + 1, 8))
+    fractions = [np.sum(hbonds >= t) / len(hbonds) * 100 for t in thresholds]
+    bars = ax2.bar(list(thresholds), fractions, color=C['green'], alpha=0.7,
+                   edgecolor='white')
+    ax2.set_title('Fracción del tiempo con ≥N H-bonds', fontweight='bold')
+    ax2.set_xlabel('Mínimo de H-bonds')
+    ax2.set_ylabel('% del tiempo')
+    for bar, frac in zip(bars, fractions):
+        ax2.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 1,
+                 f'{frac:.0f}%', ha='center', va='bottom', fontsize=9)
+
+    fig.tight_layout()
+    return fig, True
+
+
+def export_statistics_csv(stats_dict, output_path):
+    """Exporta estadísticas a CSV (v4.5)."""
+    if not stats_dict:
+        return False
+    with open(str(output_path), 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Metric', 'Mean', 'Std', 'Min', 'Max'])
+        for name, vals in stats_dict.items():
+            if vals is not None:
+                writer.writerow([name, f"{vals['mean']:.6f}", f"{vals['std']:.6f}",
+                                 f"{vals['min']:.6f}", f"{vals['max']:.6f}"])
+    return True
+
+
+def generate_html_report(rundir, figures_data, stats_dict, output_path):
+    """Genera reporte HTML con gráficas embebidas como PNG base64 (v4.5)."""
+    html_parts = [
+        '<!DOCTYPE html>',
+        '<html lang="es">',
+        '<head>',
+        '<meta charset="UTF-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+        f'<title>Reporte MD - {Path(rundir).name}</title>',
+        '<style>',
+        'body { font-family: "Segoe UI", sans-serif; background: #f8fafc; color: #1e293b; margin: 0; padding: 20px; }',
+        '.container { max-width: 1100px; margin: 0 auto; }',
+        'h1 { color: #1e3a5f; text-align: center; margin-bottom: 5px; }',
+        'h2 { color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 5px; margin-top: 40px; }',
+        '.subtitle { text-align: center; color: #64748b; font-style: italic; }',
+        '.figure { text-align: center; margin: 20px 0; }',
+        '.figure img { max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }',
+        'table { border-collapse: collapse; width: 100%; margin: 20px 0; }',
+        'th { background: #2563eb; color: white; padding: 10px; text-align: center; }',
+        'td { padding: 8px; text-align: center; border-bottom: 1px solid #e2e8f0; }',
+        'tr:nth-child(even) { background: #f0f4ff; }',
+        '.footer { text-align: center; color: #94a3b8; margin-top: 40px; font-size: 0.9em; }',
+        '</style>',
+        '</head>',
+        '<body>',
+        '<div class="container">',
+        f'<h1>Reporte de Análisis MD</h1>',
+        f'<p class="subtitle">{Path(rundir).name} &mdash; {datetime.now().strftime("%Y-%m-%d %H:%M")} &mdash; Pipeline v4.5</p>',
+    ]
+
+    if stats_dict:
+        html_parts.append('<h2>📊 Resumen Estadístico</h2>')
+        html_parts.append('<table><tr><th>Métrica</th><th>Media</th><th>Std</th><th>Mín</th><th>Máx</th></tr>')
+        for name, vals in stats_dict.items():
+            if vals is not None:
+                html_parts.append(
+                    f'<tr><td>{name}</td><td>{vals["mean"]:.4f}</td>'
+                    f'<td>{vals["std"]:.4f}</td><td>{vals["min"]:.4f}</td>'
+                    f'<td>{vals["max"]:.4f}</td></tr>'
+                )
+        html_parts.append('</table>')
+
+    current_section = ""
+    for section, title, fig_bytes in figures_data:
+        if section != current_section:
+            current_section = section
+            html_parts.append(f'<h2>{section}</h2>')
+        b64 = base64.b64encode(fig_bytes).decode('ascii')
+        html_parts.append(f'<div class="figure">')
+        html_parts.append(f'<img src="data:image/png;base64,{b64}" alt="{title}">')
+        html_parts.append(f'<p><em>{title}</em></p>')
+        html_parts.append(f'</div>')
+
+    html_parts.extend([
+        '<p class="footer">Generado automáticamente por plot_analysis.py v4.5</p>',
+        '</div></body></html>'
+    ])
+
+    with open(str(output_path), 'w', encoding='utf-8') as f:
+        f.write('\n'.join(html_parts))
+
+    return True
+
+
+# ==========================================
 # CATÁLOGO DE GRÁFICAS
 # ==========================================
 PLOTS = [
@@ -386,21 +583,26 @@ PLOTS = [
 # ==========================================
 # GENERADOR DE REPORTE
 # ==========================================
-def generate_report(rundir, output_dir=None, include_pca=True, include_dccm=True):
+def generate_report(rundir, output_dir=None, include_pca=True, include_dccm=True,
+                    output_format='pdf', running_avg_window=50):
     rundir = Path(rundir)
     dirs = [rundir / '04_analysis', rundir / '02_equilibration', rundir / '01_minimization']
     out_dir = Path(output_dir) if output_dir else rundir
     output_pdf = out_dir / 'REPORT_MD.pdf'
+    output_html = out_dir / 'REPORT_MD.html'
+    output_csv = out_dir / 'statistics_summary.csv'
     count = 0
+    html_figures = []  # (section, title, png_bytes)
 
     # Colectar estadísticas para tabla resumen
     stats = {}
 
     print(f"\n{'='*50}")
-    print(f"  GENERANDO REPORTE DE ANÁLISIS MD v4.0")
+    print(f"  GENERANDO REPORTE DE ANÁLISIS MD v4.5")
     print(f"{'='*50}")
     print(f"  Corrida: {rundir.name}")
-    print(f"  Salida:  {output_pdf}\n")
+    print(f"  Formato: {output_format.upper()}")
+    print(f"  Salida:  {output_pdf if output_format == 'pdf' else output_html}\n")
 
     with PdfPages(str(output_pdf)) as pdf:
         # Página de título
@@ -411,7 +613,7 @@ def generate_report(rundir, output_dir=None, include_pca=True, include_dccm=True
                  ha='center', va='center', fontsize=14, color='#555', style='italic')
         fig.text(0.5, 0.35, f'Generado: {datetime.now().strftime("%Y-%m-%d %H:%M")}',
                  ha='center', va='center', fontsize=11, color='#888')
-        fig.text(0.5, 0.28, 'Pipeline v4.0',
+        fig.text(0.5, 0.28, 'Pipeline v4.5',
                  ha='center', va='center', fontsize=10, color='#AAA')
         fig.patch.set_facecolor('white')
         pdf.savefig(fig)
@@ -467,9 +669,15 @@ def generate_report(rundir, output_dir=None, include_pca=True, include_dccm=True
             if ptype == 'bar':
                 plot_bar(ax, data, title, xlabel, ylabel, color)
             else:
-                plot_timeseries(ax, data, title, xlabel, ylabel, legends, color)
+                plot_timeseries(ax, data, title, xlabel, ylabel, legends, color,
+                                running_avg_window=running_avg_window)
             fig.tight_layout()
             pdf.savefig(fig)
+            # v4.5: Guardar para HTML
+            if output_format == 'html':
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', dpi=120)
+                html_figures.append((section, title_def, buf.getvalue()))
             plt.close(fig)
             count += 1
             print(f"  ✓ {title_def}")
@@ -602,11 +810,64 @@ def generate_report(rundir, output_dir=None, include_pca=True, include_dccm=True
             pdf.savefig(fig_table)
             plt.close(fig_table)
             count += 1
-            print(f"  ✓ Tabla resumen estadístico")
+            print(f"  \u2713 Tabla resumen estad\u00edstico")
+
+        # v4.5: Histograma de H-bonds
+        hbond_file = dirs[0] / 'hbond_protein_ligand.xvg'
+        if hbond_file.exists():
+            if current_section != 'Interacciones':
+                current_section = 'Interacciones'
+                fs = plt.figure(figsize=(10, 2))
+                fs.text(0.5, 0.5, 'Interacciones', ha='center', va='center',
+                        fontsize=22, fontweight='bold', color='#2563EB')
+                fs.patch.set_facecolor('#F8FAFC')
+                pdf.savefig(fs)
+                plt.close(fs)
+
+            fig_hb, ok = plot_hbond_histogram(hbond_file)
+            if ok and fig_hb is not None:
+                pdf.savefig(fig_hb)
+                if output_format == 'html':
+                    buf = io.BytesIO()
+                    fig_hb.savefig(buf, format='png', dpi=120)
+                    html_figures.append(('Interacciones', 'Distribuci\u00f3n H-bonds Prot-Lig', buf.getvalue()))
+                plt.close(fig_hb)
+                count += 1
+                print(f"  \u2713 Histograma H-bonds prote\u00edna-ligando (v4.5)")
+
+        # v4.5: Mapa de contactos por residuo (heatmap)
+        contacts_file = dirs[0] / 'contacts_prot_lig.xvg'
+        if contacts_file.exists():
+            if current_section != 'Interacciones':
+                current_section = 'Interacciones'
+
+            fig_contact, ok = plot_contact_heatmap(contacts_file)
+            if ok and fig_contact is not None:
+                pdf.savefig(fig_contact)
+                if output_format == 'html':
+                    buf = io.BytesIO()
+                    fig_contact.savefig(buf, format='png', dpi=120)
+                    html_figures.append(('Interacciones', 'Mapa de Contactos Residuo-Ligando', buf.getvalue()))
+                plt.close(fig_contact)
+                count += 1
+                print(f"  \u2713 Mapa de contactos residuo-ligando (v4.5)")
+            else:
+                print(f"  \u26a0 No se pudo generar heatmap de contactos")
+
+    # v4.5: Exportar CSV de estad\u00edsticas
+    if export_statistics_csv(stats, output_csv):
+        print(f"  \u2713 Estad\u00edsticas CSV: {output_csv}")
+
+    # v4.5: Generar reporte HTML si se pidi
+    if output_format == 'html':
+        if generate_html_report(rundir, html_figures, stats, output_html):
+            print(f"  \u2713 Reporte HTML: {output_html}")
 
     print(f"\n{'='*50}")
-    print(f"  ✓ Reporte: {output_pdf}")
-    print(f"  ✓ {count} gráficas generadas")
+    print(f"  \u2713 Reporte: {output_pdf}")
+    if output_format == 'html':
+        print(f"  \u2713 Reporte HTML: {output_html}")
+    print(f"  \u2713 {count} gr\u00e1ficas generadas")
     print(f"{'='*50}\n")
 
 
@@ -615,13 +876,14 @@ def generate_report(rundir, output_dir=None, include_pca=True, include_dccm=True
 # ==========================================
 def build_parser():
     parser = argparse.ArgumentParser(
-        description='Generador de reportes de análisis MD v4.0',
+        description='Generador de reportes de análisis MD v4.5',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos:
   python3 plot_analysis.py MD_RUN/mi_corrida/
   python3 plot_analysis.py MD_RUN/mi_corrida/ --output-dir ./reportes/
   python3 plot_analysis.py MD_RUN/mi_corrida/ --no-pca --no-dccm
+  python3 plot_analysis.py MD_RUN/mi_corrida/ --format html
         """
     )
     parser.add_argument('rundir', nargs='?', default=None,
@@ -632,6 +894,10 @@ Ejemplos:
                        help='Omitir análisis PCA y FEL')
     parser.add_argument('--no-dccm', action='store_true',
                        help='Omitir DCCM')
+    parser.add_argument('--format', choices=['pdf', 'html'], default='pdf',
+                       help='Formato de salida: pdf (default) o html (v4.5)')
+    parser.add_argument('--avg-window', type=int, default=50,
+                       help='Ventana de running average para series temporales (default: 50)')
     return parser
 
 
@@ -642,12 +908,14 @@ if __name__ == '__main__':
     if len(sys.argv) >= 2 and not sys.argv[1].startswith('-'):
         args = parser.parse_args()
         generate_report(args.rundir, output_dir=args.output_dir,
-                       include_pca=not args.no_pca, include_dccm=not args.no_dccm)
+                       include_pca=not args.no_pca, include_dccm=not args.no_dccm,
+                       output_format=args.format, running_avg_window=args.avg_window)
     elif len(sys.argv) >= 2:
         args = parser.parse_args()
         if args.rundir:
             generate_report(args.rundir, output_dir=args.output_dir,
-                           include_pca=not args.no_pca, include_dccm=not args.no_dccm)
+                           include_pca=not args.no_pca, include_dccm=not args.no_dccm,
+                           output_format=args.format, running_avg_window=args.avg_window)
         else:
             parser.print_help()
     else:

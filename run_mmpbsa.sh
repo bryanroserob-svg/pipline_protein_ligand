@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 #==========================================
-# MM-PB(GB)SA ANÁLISIS DE ENERGÍA LIBRE
+# MM-PB(GB)SA ANÁLISIS DE ENERGÍA LIBRE v4.5
 # Requiere: gmx_MMPBSA, AmberTools, GROMACS
 # Uso: ./run_mmpbsa.sh [directorio_corrida_MD]
 #      ./run_mmpbsa.sh --rundir DIR --calc TYPE [flags]
@@ -29,6 +29,9 @@ INPUT_IGB=""
 INPUT_RECEPTOR=""
 INPUT_LIGAND=""
 INPUT_ENTROPY=false
+INPUT_SKIP_RECENTER=false
+INPUT_START_TIME=""
+INPUT_END_TIME=""
 NON_INTERACTIVE=false
 
 #==========================================
@@ -70,10 +73,24 @@ Opciones (modo no interactivo):
   --interval N          Intervalo de frames (default: 5)
   --salt M              Concentración salina en M (default: 0.150)
   --igb N               Modelo GB: 1|2|5|7|8 (default: 5)
-  --receptor IDX        Índice del grupo receptor
-  --ligand IDX          Índice del grupo ligando
+  --receptor IDX        Índice del grupo receptor (auto-detecta si omitido)
+  --ligand IDX          Índice del grupo ligando (auto-detecta si omitido)
   --entropy             Incluir cálculo de entropía (Normal Mode Analysis)
+  --start-time NS       Tiempo inicial en ns para análisis (v4.5)
+  --end-time NS         Tiempo final en ns para análisis (v4.5)
+  --skip-recenter       Omitir re-centrado PBC (si ya está centrada) (v4.5)
   --help, -h            Mostrar esta ayuda
+
+Ejemplos v4.5:
+  # Análisis de los últimos 50 ns solamente:
+  $0 --rundir MD_RUN/mi_corrida --calc gb_decomp \
+    --receptor 1 --ligand 13 --start-time 50 --end-time 100
+
+  # Auto-detección de grupos (sin --receptor/--ligand):
+  $0 --rundir MD_RUN/mi_corrida --calc gb_decomp
+
+  # Saltar re-centrado:
+  $0 --rundir MD_RUN/mi_corrida --calc gb_only --skip-recenter
 EOF
 }
 
@@ -103,6 +120,14 @@ parse_mmpbsa_args() {
                 INPUT_LIGAND="$2"; shift 2 ;;
             --entropy)
                 INPUT_ENTROPY=true; shift ;;
+            --skip-recenter)
+                INPUT_SKIP_RECENTER=true; shift ;;
+            --start-time)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --start-time"; exit 1; }
+                INPUT_START_TIME="$2"; shift 2 ;;
+            --end-time)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --end-time"; exit 1; }
+                INPUT_END_TIME="$2"; shift 2 ;;
             --help|-h)
                 print_mmpbsa_usage; exit 0 ;;
             *)
@@ -114,9 +139,8 @@ parse_mmpbsa_args() {
         esac
     done
 
-    # Check if enough args for non-interactive
-    if [ -n "$INPUT_RUNDIR" ] && [ -n "$INPUT_CALC_TYPE" ] && \
-       [ -n "$INPUT_RECEPTOR" ] && [ -n "$INPUT_LIGAND" ]; then
+    # Check if enough args for non-interactive (v4.5: receptor/ligand optional)
+    if [ -n "$INPUT_RUNDIR" ] && [ -n "$INPUT_CALC_TYPE" ]; then
         NON_INTERACTIVE=true
     fi
 }
@@ -438,6 +462,13 @@ detect_index_groups() {
 # RE-CENTRADO DE TRAYECTORIA (PBC FIX)
 #==========================================
 recenter_trajectory() {
+    # v4.5: Skip recenter if requested
+    if [ "$INPUT_SKIP_RECENTER" = true ]; then
+        log_info "Re-centrado omitido (--skip-recenter)"
+        TRAJ_CENTERED="$RUNDIR/03_production/md.xtc"
+        return 0
+    fi
+
     log_step "Re-centrando trayectoria (corrección PBC)"
 
     local traj_in="$RUNDIR/03_production/md.xtc"
@@ -448,7 +479,7 @@ recenter_trajectory() {
     log_info "Esto corrige artefactos de condiciones periódicas de contorno"
     log_info "para que el complejo proteína-ligando permanezca intacto."
 
-    # Paso 1: Hacer whole (reconstruir moléculas rotas por PBC)
+    # Paso 1: Hacer whole
     log_info "Paso 1/3: Reconstruyendo moléculas (whole)..."
     echo "System" | "$GMX" trjconv \
         -f "$traj_in" \
@@ -458,8 +489,7 @@ recenter_trajectory() {
         -pbc whole \
         2>&1 | tail -5
 
-    # Paso 2: Centrar en el complejo proteína+ligando
-    # Usamos Protein_Ligand para centrar y System para output
+    # Paso 2: Centrar en el complejo
     log_info "Paso 2/3: Centrando complejo proteína-ligando..."
     echo -e "Protein_Ligand\nSystem" | "$GMX" trjconv \
         -f "$MMPBSA_DIR/_tmp_whole.xtc" \
@@ -471,7 +501,7 @@ recenter_trajectory() {
         -ur compact \
         2>&1 | tail -5
 
-    # Paso 3: Corregir cluster final
+    # Paso 3: Cluster final
     log_info "Paso 3/3: Agrupando moléculas (cluster)..."
     echo -e "Protein_Ligand\nSystem" | "$GMX" trjconv \
         -f "$MMPBSA_DIR/_tmp_center.xtc" \
@@ -493,6 +523,9 @@ recenter_trajectory() {
         log_warning "Continuando con trayectoria original (puede causar errores)"
         TRAJ_CENTERED="$traj_in"
     fi
+
+    # v4.5: Recortar por ventana temporal si se especificó
+    trim_trajectory_by_time
 }
 
 #==========================================
@@ -688,6 +721,150 @@ EOF
 }
 
 #==========================================
+# RECORTE TEMPORAL DE TRAYECTORIA (v4.5)
+#==========================================
+trim_trajectory_by_time() {
+    local start_time="${INPUT_START_TIME:-}"
+    local end_time="${INPUT_END_TIME:-}"
+
+    # Si no se especificó ninguna ventana, no hacer nada
+    if [ -z "$start_time" ] && [ -z "$end_time" ]; then
+        return 0
+    fi
+
+    log_step "Recortando trayectoria por ventana temporal (v4.5)"
+
+    local traj_input="$TRAJ_CENTERED"
+    local traj_trimmed="$MMPBSA_DIR/md_trimmed.xtc"
+    local trjconv_args=""
+
+    # Convertir ns a ps para gmx trjconv
+    if [ -n "$start_time" ]; then
+        local start_ps
+        start_ps=$(awk "BEGIN{printf \"%d\", $start_time * 1000}")
+        trjconv_args="$trjconv_args -b $start_ps"
+        log_info "Tiempo inicial: $start_time ns ($start_ps ps)"
+    fi
+
+    if [ -n "$end_time" ]; then
+        local end_ps
+        end_ps=$(awk "BEGIN{printf \"%d\", $end_time * 1000}")
+        trjconv_args="$trjconv_args -e $end_ps"
+        log_info "Tiempo final: $end_time ns ($end_ps ps)"
+    fi
+
+    echo "System" | "$GMX" trjconv \
+        -f "$traj_input" \
+        -s "$RUNDIR/03_production/md.tpr" \
+        -n "$RUNDIR/00_setup/index.ndx" \
+        -o "$traj_trimmed" \
+        $trjconv_args \
+        2>&1 | tail -5
+
+    if [ -f "$traj_trimmed" ]; then
+        local size_mb
+        size_mb=$(du -m "$traj_trimmed" | cut -f1)
+        TRAJ_CENTERED="$traj_trimmed"
+        log_success "Trayectoria recortada: md_trimmed.xtc (${size_mb} MB)"
+    else
+        log_warning "No se pudo recortar; usando trayectoria completa"
+    fi
+}
+
+#==========================================
+# AUTO-DETECCIÓN DE GRUPOS (v4.5)
+#==========================================
+auto_detect_groups() {
+    local index_file="$RUNDIR/00_setup/index.ndx"
+
+    local tmp_ndx
+    tmp_ndx=$(mktemp /tmp/gmxmmpbsa_ndx_XXXXXX.ndx)
+    local groups_output
+    groups_output=$(echo q | "$GMX" make_ndx -f "$RUNDIR/03_production/md.tpr" \
+        -n "$index_file" -o "$tmp_ndx" 2>&1 || true)
+    rm -f "$tmp_ndx"
+
+    # Buscar grupo "Protein"
+    local protein_idx
+    protein_idx=$(echo "$groups_output" | awk '/Protein[[:space:]]/ && /^[[:space:]]*[0-9]/ {print $1; exit}')
+    # Buscar grupo "LIG"
+    local ligand_idx
+    ligand_idx=$(echo "$groups_output" | awk '/LIG[[:space:]]/ && /^[[:space:]]*[0-9]/ {print $1; exit}')
+
+    if [ -n "$protein_idx" ] && [ -n "$ligand_idx" ]; then
+        GRP_RECEPTOR=$protein_idx
+        GRP_LIGAND=$ligand_idx
+        log_success "Auto-detectados: Proteína = grupo $GRP_RECEPTOR, Ligando = grupo $GRP_LIGAND"
+        return 0
+    fi
+
+    return 1
+}
+
+#==========================================
+# REPORTE DE CONVERGENCIA ENERGÉTICA (v4.5)
+#==========================================
+analyze_mmpbsa_convergence() {
+    log_step "Evaluando convergencia del cálculo MM-PB(GB)SA (v4.5)"
+
+    local csv_file="$MMPBSA_DIR/FINAL_RESULTS_MMPBSA.csv"
+    if [ ! -f "$csv_file" ]; then
+        log_warning "No se encontró CSV de resultados para evaluar convergencia"
+        return
+    fi
+
+    # Extraer ΔG values from CSV (buscar columna TOTAL)
+    local dg_values
+    dg_values=$(awk -F',' '
+        NR==1 {
+            for(i=1;i<=NF;i++) {
+                if($i ~ /TOTAL/) { col=i; break }
+            }
+            next
+        }
+        col && NF>=col { print $col }
+    ' "$csv_file" 2>/dev/null | head -200)
+
+    if [ -z "$dg_values" ]; then
+        log_warning "No se pudieron extraer valores de \u0394G del CSV"
+        return
+    fi
+
+    # Calcular media y desviación estándar con awk
+    local stats
+    stats=$(echo "$dg_values" | awk '
+        { sum+=$1; sumsq+=$1*$1; n++ }
+        END {
+            mean=sum/n
+            std=sqrt(sumsq/n - mean*mean)
+            printf "%.4f %.4f %d", mean, std, n
+        }
+    ')
+
+    local mean std nframes
+    mean=$(echo "$stats" | awk '{print $1}')
+    std=$(echo "$stats" | awk '{print $2}')
+    nframes=$(echo "$stats" | awk '{print $3}')
+
+    echo ""
+    echo -e "${CYAN}Evaluación de convergencia (v4.5):${NC}"
+    echo -e "  Frames analizados: $nframes"
+    echo -e "  \u0394G medio:          $mean kcal/mol"
+    echo -e "  Desviación est.:  $std kcal/mol"
+
+    # Evaluar convergencia (\u03c3 < 2 kcal/mol = convergido)
+    local converged
+    converged=$(awk "BEGIN{print ($std < 2.0) ? 1 : 0}")
+    if [ "$converged" -eq 1 ]; then
+        echo -e "  Estado:            ${GREEN}\u2713 CONVERGIDO (\u03c3 < 2 kcal/mol)${NC}"
+    else
+        echo -e "  Estado:            ${YELLOW}\u26a0 CONVERGENCIA DUDOSA (\u03c3 \u2265 2 kcal/mol)${NC}"
+        echo -e "  ${YELLOW}Considere: usar m\u00e1s frames (--interval 1) o simulaci\u00f3n m\u00e1s larga${NC}"
+    fi
+    echo ""
+}
+
+#==========================================
 # FUNCIÓN PRINCIPAL
 #==========================================
 main() {
@@ -723,14 +900,45 @@ main() {
         FRAME_INTERVAL="${INPUT_INTERVAL:-5}"
         SALT_CONC="${INPUT_SALT:-0.150}"
         IGB="${INPUT_IGB:-5}"
-        GRP_RECEPTOR="$INPUT_RECEPTOR"
-        GRP_LIGAND="$INPUT_LIGAND"
+
+        # v4.5: Auto-detección de grupos si no se proporcionaron
+        if [ -n "$INPUT_RECEPTOR" ] && [ -n "$INPUT_LIGAND" ]; then
+            GRP_RECEPTOR="$INPUT_RECEPTOR"
+            GRP_LIGAND="$INPUT_LIGAND"
+        else
+            log_info "Grupos no especificados, intentando auto-detección (v4.5)..."
+            if ! auto_detect_groups; then
+                log_error "No se pudieron auto-detectar grupos. Use --receptor y --ligand"
+                exit 1
+            fi
+        fi
 
         log_success "Modo no interactivo: $CALC_DESC"
     else
+        # v4.5: Preguntar ventana temporal en modo interactivo
         select_run_directory "${INPUT_RUNDIR:-${1:-}}"
         select_calculation_type
         detect_index_groups
+
+        if [ -z "${INPUT_START_TIME:-}" ] && [ -z "${INPUT_END_TIME:-}" ]; then
+            echo ""
+            echo -e "${CYAN}Ventana temporal de análisis (v4.5):${NC}"
+            echo "  1) Analizar TODA la trayectoria (default)"
+            echo "  2) Seleccionar ventana temporal (ej: solo los últimos 50 ns)"
+            echo ""
+            echo "Selección [1-2] (default: 1):"
+            read -r TIME_CHOICE
+            TIME_CHOICE=${TIME_CHOICE:-1}
+
+            if [ "$TIME_CHOICE" = "2" ]; then
+                echo "Tiempo inicial en ns (dejar vacío = desde el inicio):"
+                read -r INPUT_START_TIME
+                echo "Tiempo final en ns (dejar vacío = hasta el final):"
+                read -r INPUT_END_TIME
+                [ -n "$INPUT_START_TIME" ] && log_info "Desde: $INPUT_START_TIME ns"
+                [ -n "$INPUT_END_TIME" ] && log_info "Hasta: $INPUT_END_TIME ns"
+            fi
+        fi
     fi
 
     # Crear directorio de trabajo
@@ -742,6 +950,9 @@ main() {
     recenter_trajectory
     run_mmpbsa
     generate_results_summary
+
+    # v4.5: Análisis de convergencia
+    analyze_mmpbsa_convergence
 
     log_step "¡ANÁLISIS MM-PB(GB)SA FINALIZADO CON ÉXITO!"
     echo -e "${GREEN}Resultados en: $MMPBSA_DIR${NC}\n"

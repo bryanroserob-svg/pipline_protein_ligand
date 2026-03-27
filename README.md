@@ -1,6 +1,30 @@
-# GROMACS MD Pipeline Automatizado v4.0 (Proteína + Ligando)
+# GROMACS MD Pipeline Automatizado v4.5 (Proteína + Ligando)
 
 Pipeline para simulaciones de dinámica molecular de complejos proteína-ligando con GROMACS.
+
+## Novedades v4.5
+
+### `md_pipeline_mejorado.sh`
+- **Soporte GPU (`--gpu-id`)**: Selecciona GPU específica para `mdrun` (esencial para Colab/HPC)
+- **Grupos de energía automáticos**: Inyecta `energygrps = Protein LIG` en el MDP de producción para garantizar análisis de energía de interacción
+- **Extender simulaciones (`--extend`)**: Continúa una simulación existente sin re-preparar el sistema
+- **Progreso visual con ETA**: Muestra porcentaje y progreso durante `mdrun`
+- **Validación de ligandos (v4.5)**: Verifica consistencia entre `.gro` y `.itp` del ligando antes de simular
+- **Modo `--analysis-only`**: Re-ejecuta solo el análisis sobre una corrida existente terminada
+- **14 pasos** (antes 13): Se añade validación del ligando como paso 2
+
+### `plot_analysis.py`
+- **Mapa de contactos (heatmap)**: Visualización residuo vs tiempo de contactos proteína-ligando
+- **Running average**: Overlay de media móvil en todas las gráficas de series de tiempo
+- **Histograma H-bonds**: Distribución y fracción acumulada de puentes de hidrógeno proteína-ligando
+- **Reporte HTML (`--format html`)**: Genera reporte interactivo con gráficas embebidas
+- **Exportación CSV**: `statistics_summary.csv` con todas las métricas para comparaciones batch
+
+### `run_mmpbsa.sh`
+- **Auto-detección de grupos**: Ya no requiere `--receptor`/`--ligand` si los nombres estándar existen
+- **Ventana temporal (`--start-time`/`--end-time`)**: Selecciona qué porción de la trayectoria analizar
+- **Convergencia energética**: Evalúa automáticamente si el cálculo MM-PBSA convergió (σ < 2 kcal/mol)
+- **`--skip-recenter`**: Omite re-centrado PBC si la trayectoria ya está centrada
 
 ## Novedades v4.0
 
@@ -126,6 +150,34 @@ También se soportan alias:
 | `--nthreads` | auto (`nproc`) | Número de threads para mdrun |
 | `--maxwarn` | 1 | Máximo de warnings aceptadas por grompp |
 | `--prod-ns` | 10 | Tiempo de producción (acepta decimales: 0.5, 1, 50) |
+
+### Parámetros nuevos v4.5
+
+| Parámetro | Default | Descripción |
+|-----------|---------|-------------|
+| `--gpu-id N` | auto | ID de GPU para mdrun |
+| `--extend N` | — | Extender simulación por N ns (con `--resume`) |
+| `--analysis-only DIR` | — | Re-ejecutar solo análisis sobre corrida existente |
+
+### Ejemplos v4.5
+
+```bash
+# Usar GPU específica (HPC / Colab):
+./md_pipeline_mejorado.sh --prot cyp51 --lig eugenol --ff charmm36.ff --gpu-id 0
+
+# Extender simulación existente 50 ns más:
+./md_pipeline_mejorado.sh --extend 50 --resume
+
+# Re-ejecutar análisis sobre corrida anterior:
+./md_pipeline_mejorado.sh --analysis-only MD_RUN/cyp51_eugenol_20260326_120000
+
+# MM-PBSA con ventana temporal (solo últimos 50 ns):
+./run_mmpbsa.sh --rundir MD_RUN/mi_corrida --calc gb_decomp \
+  --start-time 50 --end-time 100
+
+# MM-PBSA con auto-detección de grupos:
+./run_mmpbsa.sh --rundir MD_RUN/mi_corrida --calc gb_decomp
+```
 
 ## Archivo de configuración (`--config`)
 
