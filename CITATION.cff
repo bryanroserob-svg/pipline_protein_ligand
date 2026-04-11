@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it using the metadata below."
+title: "GROMACS MD Pipeline for Protein-Ligand Complexes"
+abstract: >
+  An automated Bash pipeline for molecular dynamics simulations of protein-ligand
+  complexes using GROMACS. Includes GPU support, MM-PBSA binding free energy
+  calculations, advanced analysis (PCA, DCCM, contact maps), interactive HTML
+  reports, and HPC-ready SLURM/SGE templates. Applied in the undergraduate thesis
+  "Caracterización termodinámica in silico de tetralonas como inhibidores de
+  BCL-2, Caspasa-9 y p53 mediante dinámica molecular, MM-PBSA y cálculos
+  alquímicos de energía libre (RBFE/ABFE) en GROMACS" (ESPOL, 2026) to
+  simulate tetralonic compound complexes with BCL-2, Caspase-9, and p53,
+  and compute MM-PBSA binding free energies.
+authors:
+  - family-names: "Rosero"
+    given-names: "Bryan"
+    affiliation: "Escuela Superior Politécnica del Litoral (ESPOL), Ecuador"
+    orcid: "https://orcid.org/0009-0006-8546-303X"
+version: "4.5"
+date-released: "2026-04-11"
+license: MIT
+repository-code: "https://github.com/bryanrosero/pipline_protein_ligand"
+keywords:
+  - molecular dynamics
+  - GROMACS
+  - protein-ligand
+  - MM-PBSA
+  - computational chemistry
+  - drug discovery
+  - HPC
+  - automation
