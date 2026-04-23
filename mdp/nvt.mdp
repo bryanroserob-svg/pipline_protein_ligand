@@ -35,7 +35,7 @@ rlist                    = 1.2
 coulombtype              = PME
 rcoulomb                 = 1.2
 pme_order                = 4
-fourierspacing           = 0.16
+fourierspacing           = 0.12
 
 ; VAN DER WAALS (CHARMM36: force-switch)
 vdwtype                  = cutoff
@@ -56,4 +56,4 @@ pcoupl                   = no
 ; VELOCIDADES
 gen_vel                  = yes
 gen_temp                 = 300
-gen_seed                 = -1
+gen_seed                 = __SEED_PLACEHOLDER__   ; inyectado por md_pipeline_mejorado.sh

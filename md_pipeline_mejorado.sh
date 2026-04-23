@@ -1528,6 +1528,14 @@ run_nvt_equilibration() {
     sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$nvt_mdp"
     sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$nvt_mdp"
 
+    # === CORRECCIÓN reproducibilidad: inyectar semilla determinista ===
+    # Derivada del timestamp del RUNDIR → única por corrida, reproducible si se conoce RUNDIR
+    local nvt_seed
+    nvt_seed=$(echo "${RUNDIR##*_}" | tr -dc '0-9' | head -c 8)
+    nvt_seed="${nvt_seed:-91337}"
+    sed -i "s/__SEED_PLACEHOLDER__/${nvt_seed}/" "$nvt_mdp"
+    log_info "Semilla NVT inyectada: gen_seed = ${nvt_seed} (reproducible con este RUNDIR)"
+
     log_success "Grupos de termostato actualizados en nvt_temp.mdp"
 
     run_gmx grompp -f "$nvt_mdp" -c em.gro -r em.gro -p topol.top -n index.ndx \

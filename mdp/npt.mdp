@@ -35,7 +35,7 @@ rlist                    = 1.2
 coulombtype              = PME
 rcoulomb                 = 1.2
 pme_order                = 4
-fourierspacing           = 0.16
+fourierspacing           = 0.12
 
 ; VAN DER WAALS (CHARMM36: force-switch)
 vdwtype                  = cutoff

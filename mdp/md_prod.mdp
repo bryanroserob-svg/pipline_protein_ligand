@@ -34,7 +34,7 @@ pbc                      = xyz
 coulombtype              = PME
 rcoulomb                 = 1.2
 pme_order                = 4
-fourierspacing           = 0.16
+fourierspacing           = 0.12
 
 ; VAN DER WAALS (CHARMM36: force-switch)
 vdwtype                  = cutoff
@@ -44,7 +44,7 @@ rvdw                     = 1.2
 DispCorr                 = no
 
 ; CONTROL DE TEMPERATURA
-tcoupl                   = V-rescale
+tcoupl                   = nose-hoover
 tc-grps                  = Protein_Ligand Solvent
 tau_t                    = 1.0     1.0
 ref_t                    = 300     300
@@ -55,6 +55,7 @@ pcoupltype               = isotropic
 tau_p                    = 5.0
 ref_p                    = 1.0
 compressibility          = 4.5e-5
+refcoord_scaling         = com
 
 ; VELOCIDADES
 gen_vel                  = no
