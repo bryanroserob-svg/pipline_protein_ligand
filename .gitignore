@@ -26,3 +26,7 @@ Thumbs.db
 # *.edr
 # *.tpr
 # *.cpt
+
+# Graphify output
+graphify-out/
+graphify.out/

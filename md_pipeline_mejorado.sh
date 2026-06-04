@@ -1006,8 +1006,12 @@ apply_non_interactive_inputs() {
     log_info "  WATER_MODEL=$WATER_MODEL"
     log_info "  ION_CONC=$ION_CONC"
     log_info "  PROD_NS=$PROD_NS"
-    [ -n "$GPU_ID" ] && log_info "  GPU_ID=$GPU_ID"
-    [ "$DRY_RUN" = true ] && log_info "  MODO=DRY-RUN (sin mdrun)"
+    if [ -n "$GPU_ID" ]; then
+        log_info "  GPU_ID=$GPU_ID"
+    fi
+    if [ "$DRY_RUN" = true ]; then
+        log_info "  MODO=DRY-RUN (sin mdrun)"
+    fi
 }
 
 #==========================================
