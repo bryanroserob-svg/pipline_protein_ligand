@@ -575,7 +575,7 @@ validate_runtime_parameters() {
     fi
 
     # Aplicar MAXWARN si fue proporcionado
-    MAXWARN="${INPUT_MAXWARN:-1}"
+    MAXWARN="${INPUT_MAXWARN:-2}"
     if ! is_int "$MAXWARN" || [ "$MAXWARN" -lt 0 ]; then
         log_error "MAXWARN inválido: '$MAXWARN'. Debe ser entero >= 0"
         exit 1
