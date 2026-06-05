@@ -116,9 +116,9 @@ init_gmx() {
     fi
 
     if [ "$USE_MPI" = true ]; then
-        # 1 rank MPI + N threads OpenMP: configuración óptima para 1 GPU / 1 nodo
-        # Evita que gmx_mpi lance N ranks automáticamente (cada uno reserva su propia RAM)
-        MDRUN="$GMX mdrun -ntmpi 1 -ntomp $NT"
+        # N threads OpenMP: configuración óptima para 1 GPU / 1 nodo con gmx_mpi
+        # gmx_mpi usa Open MPI real → -ntmpi no existe; los ranks MPI los controla mpirun/srun
+        MDRUN="$GMX mdrun -ntomp $NT"
     else
         MDRUN="$GMX mdrun -nt $NT"
     fi
