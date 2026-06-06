@@ -2068,12 +2068,14 @@ run_analysis() {
     echo -e "\n${YELLOW}Evaluando convergencia...${NC}"
     if [ -f "rmsd_backbone.xvg" ]; then
         # Generar RMSD de segunda mitad vs primera mitad para evaluar convergencia
+        # Usar awk puro para contar y extraer: evita SIGPIPE (exit 141) del pipe grep|awk
         local total_frames
-        total_frames=$(grep -cv '^[#@]' rmsd_backbone.xvg || echo 0)
+        total_frames=$(awk '!/^[#@]/{c++} END{print c+0}' rmsd_backbone.xvg)
         local half_frame=$(( total_frames / 2 ))
         if [ "$half_frame" -gt 10 ]; then
             local half_time
-            half_time=$(grep -v '^[#@]' rmsd_backbone.xvg | awk -v hf="$half_frame" 'NR==hf {print $1; exit}')
+            # awk solo: no hay pipe que genere SIGPIPE al hacer exit anticipado
+            half_time=$(awk -v hf="$half_frame" '!/^[#@]/{c++; if(c==hf){print $1; exit}}' rmsd_backbone.xvg)
             if [ -n "$half_time" ]; then
                 echo "Backbone Backbone" | run_gmx rms -s tpr_nowat.tpr -f md_clean_nowat.xtc \
                     -o rmsd_backbone_2ndhalf.xvg -tu ns -b "$half_time" \
