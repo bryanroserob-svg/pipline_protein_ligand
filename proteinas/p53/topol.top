@@ -1,25 +1,24 @@
 ;
 ;	File 'topol.top' was generated
-;	By user: bryan-rosero (1000)
-;	On host: BRYAN-ROSERO
-;	At date: Mon Jan 26 21:41:52 2026
+;	By user: unknown (1000)
+;	On host: bryan
+;	At date: Sat Jun  6 15:46:33 2026
 ;
 ;	This is a standalone topology file
 ;
 ;	Created by:
-;	                    :-) GROMACS - gmx pdb2gmx, 2025.4 (-:
+;	                    :-) GROMACS - gmx pdb2gmx, 2026.1 (-:
 ;	
 ;	Executable:   /usr/local/gromacs/bin/gmx_mpi
 ;	Data prefix:  /usr/local/gromacs
-;	Working dir:  /home/bryan-rosero/Documentos/ ssd/proteinasFF/p53
+;	Working dir:  /mnt/c/Users/bryan/OneDrive/Escritorio/proyectos dinamica/pipline_protein_ligand/proteinas/p53
 ;	Command line:
-;	  gmx_mpi pdb2gmx -f p53.pdb -o p53_processed.gro -ter -ignh
+;	  gmx_mpi pdb2gmx -f proteina.pdb -o proteina.gro -p topol.top -water tip3p -ignh
 ;	Force field was read from current directory or a relative path - path added.
 ;
 
 ; Include forcefield parameters
-#include "./charmm36.ff/forcefield.itp"
-
+#include "./charmm36-jul2022.ff/forcefield.itp"
 
 [ moleculetype ]
 ; Name            nrexcl
@@ -28483,7 +28482,7 @@ Protein_chain_B     3
 #endif
 
 ; Include water topology
-#include "./charmm36.ff/tip3p.itp"
+#include "./charmm36-jul2022.ff/tip3p.itp"
 
 #ifdef POSRES_WATER
 ; Position restraint for each water oxygen
@@ -28493,7 +28492,7 @@ Protein_chain_B     3
 #endif
 
 ; Include topology for ions
-#include "./charmm36.ff/ions.itp"
+#include "./charmm36-jul2022.ff/ions.itp"
 
 [ system ]
 ; Name
