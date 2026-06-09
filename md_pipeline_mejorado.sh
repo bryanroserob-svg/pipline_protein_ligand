@@ -24,12 +24,17 @@ FF_IS_LOCAL=false
 #==========================================
 # COLORES PARA OUTPUT
 #==========================================
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly BLUE='\033[0;34m'
-readonly CYAN='\033[0;36m'
-readonly NC='\033[0m' # No Color
+# Bug #9: Solo usar colores ANSI si stdout es un terminal (evita caracteres basura en logs HPC)
+if [ -t 1 ]; then
+    readonly RED='\033[0;31m'
+    readonly GREEN='\033[0;32m'
+    readonly YELLOW='\033[1;33m'
+    readonly BLUE='\033[0;34m'
+    readonly CYAN='\033[0;36m'
+    readonly NC='\033[0m'
+else
+    readonly RED='' GREEN='' YELLOW='' BLUE='' CYAN='' NC=''
+fi
 
 # Variable para rastrear etapa actual (para trap)
 CURRENT_STAGE="inicialización"
@@ -41,6 +46,7 @@ DRY_RUN=false
 SHOW_HELP=false
 ANALYSIS_ONLY=false
 EXTEND_NS=""
+RESUME_DIR=""    # --resume-dir: ruta explícita al directorio de la corrida a reanudar/extender
 TEMP_FILES=()
 
 # Parámetros opcionales para modo no interactivo
@@ -111,8 +117,10 @@ init_gmx() {
     fi
 
     # Auto-detect threads if not set
+    # Bug #6: Respetar SLURM_CPUS_PER_TASK en lugar de usar nproc (que devuelve CPUs del nodo completo)
     if [ -z "$NT" ]; then
-        NT=$(nproc 2>/dev/null || echo 4)
+        NT="${SLURM_CPUS_PER_TASK:-${OMP_NUM_THREADS:-$(nproc 2>/dev/null || echo 4)}}"
+        log_info "Threads auto-detectados: $NT (SLURM_CPUS_PER_TASK/OMP_NUM_THREADS/nproc)"
     fi
 
     if [ "$USE_MPI" = true ]; then
@@ -326,6 +334,10 @@ parse_checkpoint_file() {
                 fi
                 TOTAL_STEPS="$value"
                 ;;
+            # Bug #7: Restaurar MAXWARN, NT y GPU_ID desde el checkpoint
+            MAXWARN) MAXWARN="$value" ;;
+            NT) NT="$value" ;;
+            GPU_ID) GPU_ID="$value" ;;
             *)
                 log_error "Clave no permitida en checkpoint: $key"
                 return 1
@@ -504,6 +516,12 @@ parse_args() {
             --extend)
                 [ -n "${2:-}" ] || { log_error "Falta valor para --extend"; exit 1; }
                 EXTEND_NS="$2"
+                shift 2
+                ;;
+            --resume-dir)
+                [ -n "${2:-}" ] || { log_error "Falta directorio para --resume-dir"; exit 1; }
+                RESUME_DIR="$2"
+                RESUME_MODE=true   # implica --resume automáticamente
                 shift 2
                 ;;
             --analysis-only)
@@ -1648,12 +1666,16 @@ run_production() {
     # Monitor de progreso con ETA
     monitor_mdrun "$RUNDIR/logs/mdrun_md.log" "$PROD_NS" &
     local monitor_pid=$!
+    # Bug #5: Registrar PID del monitor para cleanup si el job HPC es cancelado
+    register_temp_file "/tmp/monitor_pid_$$"
+    echo "$monitor_pid" > "/tmp/monitor_pid_$$"
 
     $MDRUN -deffnm md &> "$RUNDIR/logs/mdrun_md.log"
 
     # Terminar monitor
     kill $monitor_pid 2>/dev/null || true
     wait $monitor_pid 2>/dev/null || true
+    rm -f "/tmp/monitor_pid_$$"
     echo ""
     log_success "Simulación de producción completada"
 
@@ -2200,7 +2222,10 @@ EOF
 save_checkpoint() {
     local step_num=$1
     local step_name=$2
-    cat > "$RUNDIR/.checkpoint" <<CKPT
+    # Bug #8: Escritura atómica del checkpoint (mv es atómico en mismo filesystem)
+    # Evita checkpoints corruptos si el job HPC recibe SIGKILL durante la escritura
+    local tmp_ckpt="${RUNDIR}/.checkpoint.tmp.$$"
+    cat > "$tmp_ckpt" <<CKPT
 # Checkpoint generado automáticamente - NO EDITAR
 LAST_STEP="$step_num"
 LAST_STEP_NAME="$step_name"
@@ -2218,7 +2243,11 @@ FF_IS_LOCAL="$FF_IS_LOCAL"
 DRY_RUN="$DRY_RUN"
 TOTAL_STEPS="$TOTAL_STEPS"
 RUNDIR="$RUNDIR"
+MAXWARN="${MAXWARN:-2}"
+NT="${NT:-4}"
+GPU_ID="${GPU_ID:-}"
 CKPT
+    mv "$tmp_ckpt" "$RUNDIR/.checkpoint"
 }
 
 load_checkpoint() {
@@ -2234,6 +2263,20 @@ load_checkpoint() {
     fi
 
     RESUME_FROM=$((LAST_STEP + 1))
+
+    # Bug #2: Validar que RUNDIR existe y es accesible en este nodo
+    [ -d "$RUNDIR" ] || {
+        log_error "RUNDIR del checkpoint no existe en este nodo: $RUNDIR"
+        log_error "Verifica que el sistema de archivos compartido (NFS/Lustre) esté montado"
+        exit 1
+    }
+
+    # Bug #3: Advertir si TOTAL_STEPS del checkpoint difiere del modo actual
+    local ckpt_total_steps="$TOTAL_STEPS"
+    if [ -n "${LAST_TOTAL_STEPS:-}" ] && [ "${TOTAL_STEPS:-14}" != "$LAST_TOTAL_STEPS" ]; then
+        log_warning "TOTAL_STEPS del checkpoint ($LAST_TOTAL_STEPS) difiere del modo actual ($TOTAL_STEPS)"
+        log_warning "Verifica que usas el mismo modo (--dry-run o normal)"
+    fi
 
     log_success "Checkpoint cargado:"
     log_info "  Proteína: $PROT"
@@ -2283,6 +2326,15 @@ find_checkpoints() {
         echo "  $((i + 1))) ${infos[$i]}"
     done
     echo ""
+
+    # Bug #1: En modo non-interactive (HPC/SLURM), auto-seleccionar el checkpoint más reciente
+    # El read() bloquearía indefinidamente si stdin = /dev/null
+    if [ "$NON_INTERACTIVE" = true ] || [ "$FORCE_NON_INTERACTIVE" = true ]; then
+        log_warning "Múltiples checkpoints encontrados - seleccionando el más reciente automáticamente (modo non-interactive)"
+        load_checkpoint "${runs[-1]}"
+        return
+    fi
+
     echo "¿Cuál reanudar? [1-${#runs[@]}]:"
     read -r RESUME_CHOICE
 
@@ -2341,14 +2393,39 @@ main() {
     # Modo resume
     if [ "$RESUME_MODE" = true ]; then
         log_step "Modo RESUME activado"
-        find_checkpoints
+
+        if [ -n "$RESUME_DIR" ]; then
+            # --resume-dir: cargar checkpoint de una ruta explícita (ignora filtro COMPLETADO)
+            local ckpt_explicit
+            ckpt_explicit=$(cd "$RESUME_DIR" 2>/dev/null && pwd)
+            [ -d "$ckpt_explicit" ] || {
+                log_error "--resume-dir: directorio no encontrado: $RESUME_DIR"
+                exit 1
+            }
+            [ -f "$ckpt_explicit/.checkpoint" ] || {
+                log_error "--resume-dir: no hay checkpoint en $ckpt_explicit/.checkpoint"
+                exit 1
+            }
+            log_info "Cargando checkpoint explícito: $ckpt_explicit/.checkpoint"
+            # Permitir cargar incluso corridas COMPLETADAS (para --extend)
+            if ! parse_checkpoint_file "$ckpt_explicit/.checkpoint"; then
+                log_error "Checkpoint inválido: $ckpt_explicit/.checkpoint"
+                exit 1
+            fi
+            RUNDIR="$ckpt_explicit"
+            RESUME_FROM=$((LAST_STEP + 1))
+            log_success "Directorio: $RUNDIR"
+            log_info "Último paso completado: $LAST_STEP ($LAST_STEP_NAME)"
+        else
+            find_checkpoints
+        fi
 
         # v4.5: Si se pidió extend junto con resume
         if [ -n "$EXTEND_NS" ]; then
             extend_simulation
             # Re-ejecutar análisis después de extender
-            run_step 12 "Análisis post-producción"     run_analysis
-            run_step 13 "Generar resumen"              generate_summary
+            run_step 13 "Análisis post-producción (tras extensión)"  run_analysis
+            run_step 14 "Generar resumen"                             generate_summary
             save_checkpoint "$TOTAL_STEPS" "COMPLETADO"
             log_step "¡EXTENSIÓN + ANÁLISIS FINALIZADOS CON ÉXITO!"
             echo -e "${GREEN}Todos los resultados en: $RUNDIR${NC}\n"

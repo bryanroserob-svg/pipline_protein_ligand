@@ -1,6 +1,18 @@
-# GROMACS MD Pipeline Automatizado v4.5 (Proteína + Ligando)
+# GROMACS MD Pipeline Automatizado v4.6 (Proteína + Ligando)
 
 Pipeline para simulaciones de dinámica molecular de complejos proteína-ligando con GROMACS.
+
+## Novedades v4.6 — Robustez HPC
+
+### `md_pipeline_mejorado.sh`
+- **`--resume-dir <ruta>`**: Reanuda o extiende una simulación **específica** por ruta, sin depender de la búsqueda automática. Permite elegir exactamente qué corrida continuar aunque haya varias incompletas.
+- **Auto-selección en HPC**: En modo `--non-interactive`, si hay múltiples checkpoints, selecciona automáticamente el más reciente (evita que `read` bloquee en nodos SLURM donde `stdin = /dev/null`).
+- **Validación de RUNDIR**: Al cargar un checkpoint, verifica que el directorio de la corrida es accesible en el nodo actual (crítico en sistemas NFS/Lustre).
+- **Checkpoint atómico**: El archivo `.checkpoint` se escribe primero en un `.tmp` y luego se reemplaza con `mv` (evita checkpoint corrupto si el job recibe SIGKILL durante la escritura).
+- **Checkpoint completo**: Guarda `MAXWARN`, `NT` y `GPU_ID` para que el resume use exactamente los mismos parámetros.
+- **SLURM-aware threads**: Usa `$SLURM_CPUS_PER_TASK` para auto-detectar threads en lugar de `nproc` (que devuelve los CPUs del nodo completo, no los del job).
+- **Logs HPC limpios**: Los colores ANSI se desactivan automáticamente cuando el output se redirige a un archivo de log (sin caracteres basura).
+- **Cleanup de procesos monitor**: El PID del proceso de monitoreo se registra para limpieza correcta si el job es cancelado.
 
 ## Novedades v4.5
 
@@ -156,17 +168,34 @@ También se soportan alias:
 | Parámetro | Default | Descripción |
 |-----------|---------|-------------|
 | `--gpu-id N` | auto | ID de GPU para mdrun |
-| `--extend N` | — | Extender simulación por N ns (con `--resume`) |
+| `--extend N` | — | Extender simulación por N ns adicionales |
 | `--analysis-only DIR` | — | Re-ejecutar solo análisis sobre corrida existente |
 
-### Ejemplos v4.5
+### Parámetros nuevos v4.6 (HPC)
+
+| Parámetro | Default | Descripción |
+|-----------|---------|-------------|
+| `--resume-dir DIR` | — | Ruta explícita a la corrida a reanudar o extender. Implica `--resume` automáticamente. Permite elegir exactamente qué simulación continuar, incluso si está marcada como COMPLETADA (para `--extend`). |
+
+### Ejemplos v4.5 y v4.6
 
 ```bash
 # Usar GPU específica (HPC / Colab):
 ./md_pipeline_mejorado.sh --prot cyp51 --lig eugenol --ff charmm36.ff --gpu-id 0
 
-# Extender simulación existente 50 ns más:
-./md_pipeline_mejorado.sh --extend 50 --resume
+# Reanudar la simulación incompleta más reciente (auto-detecta):
+./md_pipeline_mejorado.sh --resume --non-interactive
+
+# Reanudar una simulación específica que se cayó (v4.6):
+./md_pipeline_mejorado.sh \
+  --resume-dir MD_RUN/caspasa9_M4-A_20260607_153000 \
+  --nthreads 16 --gpu-id 0 --non-interactive
+
+# Extender una simulación específica 100 ns más (v4.6):
+./md_pipeline_mejorado.sh \
+  --extend 100 \
+  --resume-dir MD_RUN/caspasa9_M4-A_20260607_153000 \
+  --nthreads 16 --gpu-id 0 --non-interactive
 
 # Re-ejecutar análisis sobre corrida anterior:
 ./md_pipeline_mejorado.sh --analysis-only MD_RUN/cyp51_eugenol_20260326_120000
@@ -223,11 +252,27 @@ En dry-run, revisa especialmente:
 
 ## Reanudar corridas
 
+### Reanudación automática (busca la más reciente incompleta)
+
 ```bash
-./md_pipeline_mejorado.sh --resume
+./md_pipeline_mejorado.sh --resume --non-interactive
+```
+
+### Reanudación explícita de una corrida específica (v4.6)
+
+Útil cuando hay múltiples simulaciones incompletas y quieres elegir cuál continuar:
+
+```bash
+./md_pipeline_mejorado.sh \
+  --resume-dir MD_RUN/caspasa9_M4-A_20260607_153000 \
+  --nthreads 16 \
+  --gpu-id 0 \
+  --non-interactive
 ```
 
 El checkpoint se guarda en cada paso exitoso y se valida con parser seguro antes de cargarse.
+En HPC, si el job muere por OOM KILL o walltime, el checkpoint queda en el último paso
+exitoso y la simulación puede reanudarse exactamente desde ahí.
 
 ## Batch mode (múltiples ligandos)
 
@@ -324,6 +369,9 @@ python3 plot_analysis.py --help
 - La edición de `topol.top` ahora es encapsulada, idempotente y con verificación estricta post-edición.
 - Manejo de errores reforzado con `set -E` + `trap ERR` + limpieza de temporales.
 - Archivos temporales usan `mktemp` en lugar de rutas fijas en `/tmp/`.
+- **(v4.6)** Checkpoint escrito atómicamente con `mv` — no puede quedar corrupto por SIGKILL.
+- **(v4.6)** `RUNDIR` del checkpoint se valida antes de reanudar — falla rápido si el filesystem no está montado.
+- **(v4.6)** Threads auto-detectados desde `$SLURM_CPUS_PER_TASK` para respetar el job allocation.
 
 ## Reproducibilidad
 
@@ -338,30 +386,92 @@ Al final de cada corrida se genera `SUMMARY.txt` con:
 
 ## Ejemplos para SLURM/SGE
 
-### SLURM
+### SLURM — Simulación nueva
 
 ```bash
 #!/bin/bash
-#SBATCH -J md_prot_lig
-#SBATCH -N 1
-#SBATCH -n 16
+#SBATCH --job-name=md_caspasa9_m4a
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=32G
+#SBATCH --gres=gpu:a100-sxm4-40gb:1
 #SBATCH --time=48:00:00
+#SBATCH --output=md_out_%j.log
+#SBATCH --error=md_err_%j.log
 
-./md_pipeline_mejorado.sh \
-  --prot caspasa9 \
-  --lig M4-A \
-  --ff charmm36-jul2022.ff \
-  --box dodecahedron \
-  --water tip3p \
-  --ion 0.15 \
-  --prod-ns 100 \
-  --nthreads 16
+enroot start --root --rw --mount "$HOME:$HOME" gromacs2026-cuda13 bash -c "
+    source /opt/gromacs2026.2/bin/GMXRC
+    cd \"\$HOME/pipline_protein_ligand\"
+    ./md_pipeline_mejorado.sh \\
+      --prot caspasa9 --lig M4-A --ff charmm36-jul2022.ff \\
+      --box dodecahedron --water tip3p --ion 0 \\
+      --prod-ns 100 --nthreads 16 --gpu-id 0 --non-interactive
+"
+```
 
-# MM-PBSA post-simulación (v4.0: modo no interactivo)
-./run_mmpbsa.sh \
-  --rundir MD_RUN/caspasa9_M4-A_* \
-  --calc gb_decomp \
-  --receptor 1 --ligand 13
+### SLURM — Reanudar simulación que se cayó (auto-detecta la más reciente)
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=resume_#NOMBRE_DINAMICA
+#SBATCH --partition=gpu
+#SBATCH --nodes=1 --ntasks=1 --cpus-per-task=16 --mem=32G
+#SBATCH --gres=gpu:a100-sxm4-40gb:1
+#SBATCH --time=48:00:00
+#SBATCH --output=md_out_%j.log
+#SBATCH --error=md_err_%j.log
+
+enroot start --root --rw --mount "$HOME:$HOME" gromacs2026-cuda13 bash -c "
+    source /opt/gromacs2026.2/bin/GMXRC
+    cd \"\$HOME/pipline_protein_ligand\"
+    ./md_pipeline_mejorado.sh \\
+      --resume-dir MD_RUN/#NOMBRE_DINAMICA \\
+      --nthreads 16 --gpu-id 0 --non-interactive
+"
+```
+
+### SLURM — Extender simulación específica (v4.6)
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=extend_#NOMBRE_DINAMICA
+#SBATCH --partition=gpu
+#SBATCH --nodes=1 --ntasks=1 --cpus-per-task=16 --mem=32G
+#SBATCH --gres=gpu:a100-sxm4-40gb:1
+#SBATCH --time=48:00:00
+#SBATCH --output=md_out_%j.log
+#SBATCH --error=md_err_%j.log
+
+enroot start --root --rw --mount "$HOME:$HOME" gromacs2026-cuda13 bash -c "
+    source /opt/gromacs2026.2/bin/GMXRC
+    cd \"\$HOME/pipline_protein_ligand\"
+    ./md_pipeline_mejorado.sh \\
+      --extend 100 \\
+      --resume-dir MD_RUN/#NOMBRE_DINAMICA \\
+      --nthreads 16 --gpu-id 0 --non-interactive
+"
+```
+
+### SLURM — Re-generar análisis y resumen
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=analysis_#NOMBRE_DINAMICA
+#SBATCH --partition=gpu
+#SBATCH --nodes=1 --ntasks=1 --cpus-per-task=16 --mem=32G
+#SBATCH --gres=gpu:a100-sxm4-40gb:1
+#SBATCH --time=4:00:00
+#SBATCH --output=md_out_%j.log
+#SBATCH --error=md_err_%j.log
+
+enroot start --root --rw --mount "$HOME:$HOME" gromacs2026-cuda13 bash -c "
+    source /opt/gromacs2026.2/bin/GMXRC
+    cd \"\$HOME/pipline_protein_ligand\"
+    ./md_pipeline_mejorado.sh \\
+      --analysis-only MD_RUN/#NOMBRE_DINAMICA
+"
 ```
 
 ### SGE
