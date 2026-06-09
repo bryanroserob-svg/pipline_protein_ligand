@@ -1619,48 +1619,68 @@ run_production() {
     log_step "Iniciando simulación de producción - SIN RESTRICCIONES"
 
     link_setup_files "$RUNDIR/03_production"
-    cp -f ../02_equilibration/npt.gro .
-    cp -f ../02_equilibration/npt.cpt .
 
-    # Modificar MDP para grupos correctos (sin restricciones)
-    local md_mdp="md_prod_temp.mdp"
-    cp "$RUNDIR/mdp_used/md_prod.mdp" "$md_mdp"
+    # =========================================================
+    # DETECCIÓN DE CHECKPOINT DE PRODUCCIÓN (--resume)
+    # Si md.cpt existe y estamos en modo resume, continuamos
+    # la MD desde donde quedó sin perder los NS ya simulados.
+    # =========================================================
+    local cpt_file="$RUNDIR/03_production/md.cpt"
+    local tpr_file="$RUNDIR/03_production/md.tpr"
+    local resuming_production=false
 
-    # Actualizar nsteps según el tiempo elegido por el usuario
-    sed -i "s/^nsteps.*/nsteps                   = ${PROD_NSTEPS}      ; ${PROD_NS} ns/" "$md_mdp"
-
-    # Reemplazar grupos de temperatura (tau_t se deja como está en el MDP original)
-    sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$md_mdp"
-    sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$md_mdp"
-
-    # v4.6: Producción SIN energygrps → GPU full speed
-    # energygrps es incompatible con cálculos no-bonded en GPU (GROMACS lo fuerza a CPU)
-    # Solución: producción en GPU limpia + rerun posterior para extraer energías Protein↔LIG
-    if grep -q '^energygrps' "$md_mdp"; then
-        sed -i '/^energygrps/d' "$md_mdp"
-        sed -i '/^; GRUPOS DE ENERGÍA/d' "$md_mdp"
-        log_info "energygrps eliminado del MDP de producción (incompatible con GPU)"
+    if [ "${RESUME_MODE:-false}" = true ] && [ -f "$cpt_file" ] && [ -f "$tpr_file" ]; then
+        resuming_production=true
+        log_warning "Checkpoint de producción detectado: md.cpt"
+        log_info "Reanudando MD desde el punto de corte (los NS previos se conservan)"
     fi
 
-    log_success "Producción configurada: $PROD_NS ns ($PROD_NSTEPS steps)"
+    if [ "$resuming_production" = false ]; then
+        # Flujo normal: preparar archivos y generar TPR desde cero
+        cp -f ../02_equilibration/npt.gro .
+        cp -f ../02_equilibration/npt.cpt .
 
-    # --- TPR PRINCIPAL: sin energygrps, GPU-compatible ---
-    run_gmx grompp -f "$md_mdp" -c npt.gro -t npt.cpt -p topol.top \
-        -n index.ndx -o md.tpr -maxwarn "$MAXWARN" &> "$RUNDIR/logs/grompp_md.log"
-    grep -i 'WARNING' "$RUNDIR/logs/grompp_md.log" | head -5 | while read -r w; do log_warning "grompp-md: $w"; done || true
+        # Modificar MDP para grupos correctos (sin restricciones)
+        local md_mdp="md_prod_temp.mdp"
+        cp "$RUNDIR/mdp_used/md_prod.mdp" "$md_mdp"
 
-    # --- TPR RERUN: con energygrps = Protein LIG (para post-producción) ---
-    local md_rerun_mdp="md_rerun_temp.mdp"
-    cp "$md_mdp" "$md_rerun_mdp"
-    printf '\n; GRUPOS DE ENERGÍA (rerun post-producción, no afecta velocidad GPU)\nenerygrps_placeholder\n' >> "$md_rerun_mdp"
-    sed -i 's/^enerygrps_placeholder/energygrps               = Protein LIG/' "$md_rerun_mdp"
-    run_gmx grompp -f "$md_rerun_mdp" -c npt.gro -t npt.cpt -p topol.top \
-        -n index.ndx -o md_rerun.tpr -maxwarn "$MAXWARN" &> "$RUNDIR/logs/grompp_md_rerun.log"
-    grep -i 'WARNING' "$RUNDIR/logs/grompp_md_rerun.log" | head -5 | while read -r w; do log_warning "grompp-rerun: $w"; done || true
-    rm -f "$md_rerun_mdp"
-    log_success "TPR para rerun preparado: md_rerun.tpr (energygrps = Protein LIG)"
+        # Actualizar nsteps según el tiempo elegido por el usuario
+        sed -i "s/^nsteps.*/nsteps                   = ${PROD_NSTEPS}      ; ${PROD_NS} ns/" "$md_mdp"
 
-    log_success "Sistema preparado para producción (GPU)"
+        # Reemplazar grupos de temperatura (tau_t se deja como está en el MDP original)
+        sed -i 's/^tc-grps.*/tc-grps                  = Protein_Ligand Solvent/' "$md_mdp"
+        sed -i 's/^ref_t.*/ref_t                    = 300     300/' "$md_mdp"
+
+        # v4.6: Producción SIN energygrps → GPU full speed
+        # energygrps es incompatible con cálculos no-bonded en GPU (GROMACS lo fuerza a CPU)
+        # Solución: producción en GPU limpia + rerun posterior para extraer energías Protein↔LIG
+        if grep -q '^energygrps' "$md_mdp"; then
+            sed -i '/^energygrps/d' "$md_mdp"
+            sed -i '/^; GRUPOS DE ENERGÍA/d' "$md_mdp"
+            log_info "energygrps eliminado del MDP de producción (incompatible con GPU)"
+        fi
+
+        log_success "Producción configurada: $PROD_NS ns ($PROD_NSTEPS steps)"
+
+        # --- TPR PRINCIPAL: sin energygrps, GPU-compatible ---
+        run_gmx grompp -f "$md_mdp" -c npt.gro -t npt.cpt -p topol.top \
+            -n index.ndx -o md.tpr -maxwarn "$MAXWARN" &>"$RUNDIR/logs/grompp_md.log"
+        grep -i 'WARNING' "$RUNDIR/logs/grompp_md.log" | head -5 | while read -r w; do log_warning "grompp-md: $w"; done || true
+
+        # --- TPR RERUN: con energygrps = Protein LIG (para post-producción) ---
+        local md_rerun_mdp="md_rerun_temp.mdp"
+        cp "$md_mdp" "$md_rerun_mdp"
+        printf '\n; GRUPOS DE ENERGÍA (rerun post-producción, no afecta velocidad GPU)\nenerygrps_placeholder\n' >> "$md_rerun_mdp"
+        sed -i 's/^enerygrps_placeholder/energygrps               = Protein LIG/' "$md_rerun_mdp"
+        run_gmx grompp -f "$md_rerun_mdp" -c npt.gro -t npt.cpt -p topol.top \
+            -n index.ndx -o md_rerun.tpr -maxwarn "$MAXWARN" &>"$RUNDIR/logs/grompp_md_rerun.log"
+        grep -i 'WARNING' "$RUNDIR/logs/grompp_md_rerun.log" | head -5 | while read -r w; do log_warning "grompp-rerun: $w"; done || true
+        rm -f "$md_rerun_mdp"
+        log_success "TPR para rerun preparado: md_rerun.tpr (energygrps = Protein LIG)"
+
+        log_success "Sistema preparado para producción (GPU)"
+    fi
+
     echo -e "\n${YELLOW}Ejecutando producción en GPU (esto puede tardar)...${NC}\n"
 
     # Monitor de progreso con ETA
@@ -1670,13 +1690,35 @@ run_production() {
     register_temp_file "/tmp/monitor_pid_$$"
     echo "$monitor_pid" > "/tmp/monitor_pid_$$"
 
-    $MDRUN -deffnm md &> "$RUNDIR/logs/mdrun_md.log"
+    if [ "$resuming_production" = true ]; then
+        # Reanudar desde checkpoint: -cpi md.cpt + -noappend para evitar corrupción
+        log_info "Usando: $MDRUN -deffnm md -cpi md.cpt -noappend"
+        $MDRUN -deffnm md -cpi md.cpt -noappend &>"$RUNDIR/logs/mdrun_md_resume.log"
+    else
+        $MDRUN -deffnm md &>"$RUNDIR/logs/mdrun_md.log"
+    fi
 
     # Terminar monitor
     kill $monitor_pid 2>/dev/null || true
     wait $monitor_pid 2>/dev/null || true
     rm -f "/tmp/monitor_pid_$$"
     echo ""
+
+    # Si se usó -noappend (resume), mdrun genera md.part000X.xtc → concatenar todo en md.xtc
+    if [ "$resuming_production" = true ] && ls md.part*.xtc &>/dev/null; then
+        log_step "Concatenando trayectorias parciales en md.xtc..."
+        run_gmx trjcat -f md.part*.xtc -o md.xtc -cat \
+            &>"$RUNDIR/logs/trjcat_resume.log"
+        log_success "Trayectorias concatenadas: md.xtc (trayectoria completa recuperada)"
+
+        # Concatenar también los .edr parciales para el análisis de energía
+        if ls md.part*.edr &>/dev/null; then
+            run_gmx eneconv -f md.part*.edr -o md.edr \
+                &>"$RUNDIR/logs/eneconv_resume.log"
+            log_success "Archivos de energía concatenados: md.edr"
+        fi
+    fi
+
     log_success "Simulación de producción completada"
 
     # --- RERUN: recalcular energías Protein↔LIG sobre la trayectoria ---
