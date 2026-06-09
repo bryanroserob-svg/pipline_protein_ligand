@@ -1691,9 +1691,9 @@ run_production() {
     echo "$monitor_pid" > "/tmp/monitor_pid_$$"
 
     if [ "$resuming_production" = true ]; then
-        # Reanudar desde checkpoint: -cpi md.cpt + -noappend para evitar corrupción
-        log_info "Usando: $MDRUN -deffnm md -cpi md.cpt -noappend"
-        $MDRUN -deffnm md -cpi md.cpt -noappend &>"$RUNDIR/logs/mdrun_md_resume.log"
+        # Reanudar desde checkpoint: GROMACS hace append automático en md.xtc/md.edr
+        log_info "Usando: $MDRUN -deffnm md -cpi md.cpt"
+        $MDRUN -deffnm md -cpi md.cpt &>"$RUNDIR/logs/mdrun_md_resume.log"
     else
         $MDRUN -deffnm md &>"$RUNDIR/logs/mdrun_md.log"
     fi
@@ -1703,21 +1703,6 @@ run_production() {
     wait $monitor_pid 2>/dev/null || true
     rm -f "/tmp/monitor_pid_$$"
     echo ""
-
-    # Si se usó -noappend (resume), mdrun genera md.part000X.xtc → concatenar todo en md.xtc
-    if [ "$resuming_production" = true ] && ls md.part*.xtc &>/dev/null; then
-        log_step "Concatenando trayectorias parciales en md.xtc..."
-        run_gmx trjcat -f md.part*.xtc -o md.xtc -cat \
-            &>"$RUNDIR/logs/trjcat_resume.log"
-        log_success "Trayectorias concatenadas: md.xtc (trayectoria completa recuperada)"
-
-        # Concatenar también los .edr parciales para el análisis de energía
-        if ls md.part*.edr &>/dev/null; then
-            run_gmx eneconv -f md.part*.edr -o md.edr \
-                &>"$RUNDIR/logs/eneconv_resume.log"
-            log_success "Archivos de energía concatenados: md.edr"
-        fi
-    fi
 
     log_success "Simulación de producción completada"
 
