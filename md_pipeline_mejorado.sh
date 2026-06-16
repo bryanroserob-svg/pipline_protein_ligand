@@ -1,7 +1,7 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-# GROMACS MD Pipeline Automatizado v4.5 (Proteína + Ligando)
+# GROMACS MD Pipeline Automatizado v4.6 (Proteína + Ligando)
 #==========================================
 # CONFIGURACIÓN
 #==========================================
@@ -1399,16 +1399,39 @@ EOF
 # CONSTRUCCIÓN DEL SISTEMA
 #==========================================
 build_complex() {
-    log_step "Ensamblando complejo proteína-ligando"
+    log_step "Ensamblando complejo proteína-ligando (preservando posición de docking)"
 
     cd "$RUNDIR/00_setup" || exit 1
 
-    run_gmx editconf -f proteina.gro -o prot.gro &> "$RUNDIR/logs/editconf_prot.log"
+    # NOTA: NO usamos insert-molecules porque reubica al ligando en posición aleatoria.
+    # En su lugar, concatenamos directamente proteína + ligando ya que ambos .gro
+    # comparten el mismo sistema de coordenadas (el ligando sale del docking sobre la proteína).
 
-    run_gmx insert-molecules -f prot.gro -ci ligando.gro -o complex.gro -nmol 1 \
-        &> "$RUNDIR/logs/insert_molecules.log"
+    local n_atoms_prot n_atoms_lig n_atoms_tot
+    n_atoms_prot=$(sed -n '2p' proteina.gro | awk '{print $1}')
+    n_atoms_lig=$(sed -n '2p' ligando.gro | awk '{print $1}')
+    n_atoms_tot=$((n_atoms_prot + n_atoms_lig))
 
-    log_success "Complejo ensamblado: complex.gro"
+    # Construir complex.gro: título + nátoms + coordenadas prot + coordenadas lig + caja
+    {
+        echo "Complejo Proteina-Ligando"
+        echo "$n_atoms_tot"
+        # Líneas de coordenadas de la proteína (sin título, sin nátoms, sin caja)
+        tail -n +3 proteina.gro | head -n -1
+        # Líneas de coordenadas del ligando (sin título, sin nátoms, sin caja)
+        tail -n +3 ligando.gro | head -n -1
+        # Vectores de caja de la proteína
+        tail -n 1 proteina.gro
+    } > complex.gro
+
+    local n_check
+    n_check=$(sed -n '2p' complex.gro | awk '{print $1}')
+    if [ "$n_check" -ne "$n_atoms_tot" ]; then
+        log_error "complex.gro tiene $n_check átomos, se esperaban $n_atoms_tot"
+        exit 1
+    fi
+
+    log_success "Complejo ensamblado: complex.gro ($n_atoms_tot átomos, posición de docking preservada)"
 }
 
 #==========================================
