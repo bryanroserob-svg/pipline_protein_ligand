@@ -152,13 +152,18 @@ def plot_bar(ax, data, title, xlabel, ylabel, color=None):
     ax.legend(fontsize=9)
 
 
-def plot_matrix_from_xpm(ax, filepath):
-    """Intenta parsear un .xpm para heatmap. Retorna True si exitoso."""
-    values, color_map = [], {}
+def plot_matrix_from_xpm(ax, filepath, max_size=800):
+    """Parsea un .xpm para heatmap con submuestreo automático para evitar OOM.
+    Retorna True si exitoso."""
+    color_map = {}
+    data_lines = []
+
     try:
         with open(filepath, 'r') as f:
+            header_done = False
             for line in f:
                 line = line.strip()
+                # Mapa de colores: líneas con 'c #'
                 if '"' in line and 'c #' in line:
                     parts = line.split('"')
                     if len(parts) >= 2:
@@ -166,20 +171,39 @@ def plot_matrix_from_xpm(ax, filepath):
                         vm = re.search(r'/\*\s*"([\d.eE+-]+)"', line)
                         if vm:
                             color_map[char] = float(vm.group(1))
-                elif line.startswith('"') and '/*' not in line:
-                    row_str = line.strip('",')
-                    row = [color_map.get(c, 0.0) for c in row_str if c in color_map]
-                    if row:
-                        values.append(row)
+                # Filas de datos: comienzan con '"' y no son definiciones
+                elif line.startswith('"') and '/*' not in line and 'c #' not in line:
+                    if not header_done:
+                        # La primera línea de datos es la cabecera de dimensiones (ignorar)
+                        header_done = True
+                        continue
+                    data_lines.append(line.strip('",'))
     except Exception:
         return False
+
+    if not data_lines or not color_map:
+        return False
+
+    # Calcular stride para que la matriz no supere max_size × max_size
+    n_rows = len(data_lines)
+    n_cols = len(data_lines[0]) if data_lines else 1
+    row_stride = max(1, n_rows // max_size)
+    col_stride = max(1, n_cols // max_size)
+
+    values = []
+    for i in range(0, n_rows, row_stride):
+        row = [color_map.get(c, 0.0)
+               for j, c in enumerate(data_lines[i])
+               if j % col_stride == 0 and c in color_map]
+        if row:
+            values.append(row)
 
     if not values:
         return False
 
     matrix = np.array(values)
     im = ax.imshow(matrix, cmap='YlOrRd', aspect='auto', origin='lower')
-    ax.set_title('Matriz RMSD')
+    ax.set_title(f'Matriz RMSD (submuestreada ~{max_size}×{max_size})')
     ax.set_xlabel('Tiempo (frames)')
     ax.set_ylabel('Tiempo (frames)')
     plt.colorbar(im, ax=ax, label='RMSD (nm)', shrink=0.8)
@@ -234,8 +258,9 @@ def plot_fel(filepath):
     return fig, True
 
 
-def plot_dccm(filepath):
-    """Genera DCCM desde ca_positions.xvg. Retorna (fig, True) o (None, False)."""
+def plot_dccm(filepath, max_atoms=500, max_frames=5000):
+    """Genera DCCM desde ca_positions.xvg con submuestreo en frames y átomos para evitar OOM.
+    Retorna (fig, True) o (None, False)."""
     data, _, _, _, _ = parse_xvg(filepath)
     if data is None or data.shape[1] < 4:
         return None, False
@@ -247,11 +272,19 @@ def plot_dccm(filepath):
     if n_atoms < 2:
         return None, False
 
-    # Stride automático para trayectorias largas (v4.0)
-    if n_frames > 5000:
-        stride = n_frames // 5000
+    # Stride en frames para trayectorias largas
+    if n_frames > max_frames:
+        stride = n_frames // max_frames
         coords = coords[::stride]
         n_frames = coords.shape[0]
+
+    # Stride en átomos para proteínas grandes (evita OOM en einsum)
+    atom_stride = max(1, n_atoms // max_atoms)
+    if atom_stride > 1:
+        # Submuestrear en grupos de 3 columnas (x,y,z por átomo)
+        atom_cols = [j for a in range(0, n_atoms, atom_stride) for j in (a*3, a*3+1, a*3+2)]
+        coords = coords[:, atom_cols]
+        n_atoms = coords.shape[1] // 3
 
     # Reshape a (n_frames, n_atoms, 3)
     coords_3d = coords.reshape(n_frames, n_atoms, 3)
@@ -708,16 +741,19 @@ def generate_report(rundir, output_dir=None, include_pca=True, include_dccm=True
         # RMSD Matrix
         xpm = dirs[0] / 'rmsd_matrix.xpm'  # 04_analysis
         if xpm.exists():
-            fig, ax = plt.subplots(figsize=(8, 7))
-            if plot_matrix_from_xpm(ax, xpm):
-                fig.tight_layout()
-                pdf.savefig(fig)
-                plt.close(fig)
-                count += 1
-                print(f"  ✓ Matriz RMSD")
-            else:
-                plt.close(fig)
-                print(f"  ⚠ No se pudo parsear rmsd_matrix.xpm")
+            try:
+                fig, ax = plt.subplots(figsize=(8, 7))
+                if plot_matrix_from_xpm(ax, xpm):
+                    fig.tight_layout()
+                    pdf.savefig(fig)
+                    count += 1
+                    print(f"  ✓ Matriz RMSD")
+                else:
+                    print(f"  ⚠ No se pudo parsear rmsd_matrix.xpm")
+            except MemoryError:
+                print(f"  ⚠ Matriz RMSD omitida: archivo demasiado grande para la RAM disponible")
+            finally:
+                plt.close('all')
 
         # Free Energy Landscape (FEL)
         if include_pca:
@@ -756,14 +792,18 @@ def generate_report(rundir, output_dir=None, include_pca=True, include_dccm=True
                     pdf.savefig(fs)
                     plt.close(fs)
 
-                fig_dccm, ok = plot_dccm(dccm_file)
-                if ok and fig_dccm is not None:
-                    pdf.savefig(fig_dccm)
-                    plt.close(fig_dccm)
-                    count += 1
-                    print(f"  ✓ DCCM (Correlación Dinámica)")
-                else:
-                    print(f"  ⚠ No se pudo generar DCCM desde ca_positions.xvg")
+                try:
+                    fig_dccm, ok = plot_dccm(dccm_file)
+                    if ok and fig_dccm is not None:
+                        pdf.savefig(fig_dccm)
+                        count += 1
+                        print(f"  ✓ DCCM (Correlación Dinámica)")
+                    else:
+                        print(f"  ⚠ No se pudo generar DCCM desde ca_positions.xvg")
+                except MemoryError:
+                    print(f"  ⚠ DCCM omitido: demasiados átomos/frames para la RAM disponible")
+                finally:
+                    plt.close('all')
             else:
                 print(f"  ⚠ No encontrado: ca_positions.xvg (DCCM no disponible)")
 
