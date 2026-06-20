@@ -2120,14 +2120,29 @@ run_analysis() {
     echo -e "\n${YELLOW}Análisis extendido v4.0...${NC}"
 
     # 8. Energía de interacción proteína-ligando (Coulomb + LJ)
+    # Usar md_rerun.edr si existe (generado por el rerun con energygrps = Protein LIG)
+    # Fallback a md.edr si no hay rerun disponible
     echo -e "\n${YELLOW}Calculando energía de interacción proteína-ligando...${NC}"
-    echo "Coul-SR:Protein-LIG LJ-SR:Protein-LIG" | \
-        run_gmx energy -f md.edr -o interaction_energy.xvg \
-        &> "$RUNDIR/logs/analysis_interaction_energy.log" 2>&1 || true
+    local edr_source=""
+    if [ -f "md_rerun.edr" ]; then
+        edr_source="md_rerun.edr"
+        log_info "Usando md_rerun.edr (energygrps disponibles)"
+    elif [ -f "md.edr" ]; then
+        edr_source="md.edr"
+        log_warning "md_rerun.edr no encontrado, usando md.edr (puede fallar si no hay energygrps)"
+    fi
+
+    if [ -n "$edr_source" ]; then
+        echo "Coul-SR:Protein-LIG LJ-SR:Protein-LIG" | \
+            run_gmx energy -f "$edr_source" -o interaction_energy.xvg \
+            &> "$RUNDIR/logs/analysis_interaction_energy.log" 2>&1 || true
+    fi
+
     if [ -f "interaction_energy.xvg" ]; then
-        log_success "Energía de interacción: interaction_energy.xvg"
+        log_success "Energía de interacción: interaction_energy.xvg (desde $edr_source)"
     else
-        log_warning "No se pudo extraer energía de interacción (grupos de energía no disponibles en MDP)"
+        log_warning "No se pudo extraer energía de interacción"
+        log_warning "  Verifica que el rerun se completó: ls 03_production/md_rerun.edr"
     fi
 
     # 9. Contactos nativos (fraction of native contacts - Q)
