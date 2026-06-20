@@ -2,7 +2,7 @@
 ;	File 'topol.top' was generated
 ;	By user: unknown (1000)
 ;	On host: bryan
-;	At date: Thu Jun  4 17:28:56 2026
+;	At date: Sat Jun 20 17:58:59 2026
 ;
 ;	This is a standalone topology file
 ;
@@ -13,12 +13,12 @@
 ;	Data prefix:  /usr/local/gromacs
 ;	Working dir:  /mnt/c/Users/bryan/OneDrive/Escritorio/proyectos dinamica/pipline_protein_ligand/proteinas/bcl-2
 ;	Command line:
-;	  gmx_mpi pdb2gmx -f proteina.pdb -o proteina.gro -ter
+;	  gmx_mpi pdb2gmx -f proteina.pdb -o proteina.gro -water tip3p -ignh
 ;	Force field was read from current directory or a relative path - path added.
 ;
 
 ; Include forcefield parameters
-#include "./charmm36-jul2022.ff/forcefield.itp"
+#include "./charmm36-feb2026_cgenff-5.0.ff/forcefield.itp"
 
 [ moleculetype ]
 ; Name            nrexcl
@@ -21391,7 +21391,7 @@ Protein_chain_A     3
 #endif
 
 ; Include water topology
-#include "./charmm36-jul2022.ff/tip3p.itp"
+#include "./charmm36-feb2026_cgenff-5.0.ff/tip3p.itp"
 
 #ifdef POSRES_WATER
 ; Position restraint for each water oxygen
@@ -21401,7 +21401,7 @@ Protein_chain_A     3
 #endif
 
 ; Include topology for ions
-#include "./charmm36-jul2022.ff/ions.itp"
+#include "./charmm36-feb2026_cgenff-5.0.ff/ions.itp"
 
 [ system ]
 ; Name
