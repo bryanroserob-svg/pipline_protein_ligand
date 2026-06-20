@@ -150,7 +150,7 @@ run_gmx() {
 adapt_mdp_for_forcefield() {
     local mdp_dir="$1"
 
-    # Detectar si es CHARMM desde FF_DIR (ej: charmm36-jul2022.ff, charmm27.ff)
+    # Detectar si es CHARMM desde FF_DIR (ej: charmm36-feb2026_cgenff-5.0.ff, charmm27.ff)
     local is_charmm=false
     case "${FF_DIR:-}" in
         charmm*) is_charmm=true ;;
@@ -359,7 +359,7 @@ Uso:
 Opciones:
   --prot <nombre>         Carpeta dentro de proteinas/
   --lig <nombre>          Carpeta dentro de ligandos/
-  --ff <ff_dir>           Force field (ej: charmm36-jul2022.ff)
+  --ff <ff_dir>           Force field (ej: charmm36-feb2026_cgenff-5.0.ff)
   --box <tipo>            Alias de --box-type
   --box-type <tipo>       cubic|triclinic|dodecahedron|octahedron
   --box-dist <nm>         Distancia de caja (default: 1.2)
@@ -384,7 +384,7 @@ Modo no interactivo automático:
 
 Ejemplos v4.5:
   # Usar GPU específica:
-  $0 --prot caspasa9 --lig M4-A --ff charmm36-jul2022.ff --gpu-id 0
+  $0 --prot caspasa9 --lig M4-A --ff charmm36-feb2026_cgenff-5.0.ff --gpu-id 0
 
   # Extender simulación existente 50 ns:
   $0 --extend 50 --resume
@@ -395,7 +395,7 @@ Ejemplos v4.5:
 Formato de --config:
   PROT=caspasa9
   LIG=M4-A
-  FF=charmm36-jul2022.ff
+  FF=charmm36-feb2026_cgenff-5.0.ff
   BOX_TYPE=dodecahedron
   BOX_DIST=1.2
   WATER_MODEL=tip3p
