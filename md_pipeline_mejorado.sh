@@ -358,7 +358,7 @@ Uso:
 
 Opciones:
   --prot <nombre>         Carpeta dentro de proteinas/
-  --lig <nombre>          Carpeta dentro de ligandos/
+  --lig <nombre>          Carpeta dentro de ligandos/<proteina>/
   --ff <ff_dir>           Force field (ej: charmm36-feb2026_cgenff-5.0.ff)
   --box <tipo>            Alias de --box-type
   --box-type <tipo>       cubic|triclinic|dodecahedron|octahedron
@@ -709,11 +709,19 @@ get_user_input() {
 
     if [ ! -d "$INITIAL_DIR/$BASE_LIG" ]; then
         log_error "No se encontró la carpeta '$BASE_LIG/' en el directorio actual"
-        log_info "Crea la carpeta y coloca subcarpetas con archivos ligando.itp y ligando.gro dentro"
+        log_info "Crea la carpeta con subcarpetas por proteína y dentro de cada una los ligandos dockeados"
         exit 1
     fi
 
-    for lig_dir in "$INITIAL_DIR/$BASE_LIG"/*/; do
+    # Nueva estructura: ligandos/<proteina>/<ligando>/
+    local prot_lig_dir="$INITIAL_DIR/$BASE_LIG/$PROT"
+    if [ ! -d "$prot_lig_dir" ]; then
+        log_error "No se encontró la carpeta de ligandos para '$PROT': $BASE_LIG/$PROT/"
+        log_info "Crea la carpeta '$BASE_LIG/$PROT/' y coloca subcarpetas con los ligandos dockeados"
+        exit 1
+    fi
+
+    for lig_dir in "$prot_lig_dir"/*/; do
         if [ -d "$lig_dir" ]; then
             # Buscar ligando.itp y ligando.gro
             if [ -f "$lig_dir/ligando.itp" ] && [ -f "$lig_dir/ligando.gro" ]; then
@@ -729,11 +737,11 @@ get_user_input() {
     done
 
     if [ ${#LIG_DIRS[@]} -eq 0 ]; then
-        log_error "No se encontraron ligandos (carpetas con ligando.itp + ligando.gro) en '$BASE_LIG/'"
+        log_error "No se encontraron ligandos (carpetas con ligando.itp + ligando.gro) en '$BASE_LIG/$PROT/'"
         exit 1
     fi
 
-    echo "  Ligandos disponibles en $BASE_LIG/:"
+    echo "  Ligandos disponibles en $BASE_LIG/$PROT/:"
     echo ""
     for i in "${!LIG_DIRS[@]}"; do
         local idx=$((i + 1))
@@ -1007,9 +1015,9 @@ apply_non_interactive_inputs() {
     [ -f "$INITIAL_DIR/$BASE_PROT/$PROT/topol.top" ] || { log_error "Falta topol.top en $BASE_PROT/$PROT"; exit 1; }
     [ -f "$INITIAL_DIR/$BASE_PROT/$PROT/posre.itp" ] || { log_error "Falta posre.itp en $BASE_PROT/$PROT"; exit 1; }
 
-    [ -d "$INITIAL_DIR/$BASE_LIG/$LIG" ] || { log_error "Ligando no encontrado: $BASE_LIG/$LIG"; exit 1; }
-    [ -f "$INITIAL_DIR/$BASE_LIG/$LIG/ligando.gro" ] || { log_error "Falta ligando.gro en $BASE_LIG/$LIG"; exit 1; }
-    [ -f "$INITIAL_DIR/$BASE_LIG/$LIG/ligando.itp" ] || { log_error "Falta ligando.itp en $BASE_LIG/$LIG"; exit 1; }
+    [ -d "$INITIAL_DIR/$BASE_LIG/$PROT/$LIG" ] || { log_error "Ligando no encontrado: $BASE_LIG/$PROT/$LIG"; exit 1; }
+    [ -f "$INITIAL_DIR/$BASE_LIG/$PROT/$LIG/ligando.gro" ] || { log_error "Falta ligando.gro en $BASE_LIG/$PROT/$LIG"; exit 1; }
+    [ -f "$INITIAL_DIR/$BASE_LIG/$PROT/$LIG/ligando.itp" ] || { log_error "Falta ligando.itp en $BASE_LIG/$PROT/$LIG"; exit 1; }
 
     if [ "$SELECTED_FF_LOCAL" = false ]; then
         if ! [ -d "$INITIAL_DIR/$INPUT_FF" ]; then
@@ -1040,8 +1048,8 @@ apply_non_interactive_inputs() {
 validate_ligand_files() {
     log_step "Validando integridad de archivos del ligando (v4.5)"
 
-    local lig_gro="$INITIAL_DIR/$BASE_LIG/$LIG/ligando.gro"
-    local lig_itp="$INITIAL_DIR/$BASE_LIG/$LIG/ligando.itp"
+    local lig_gro="$INITIAL_DIR/$BASE_LIG/$PROT/$LIG/ligando.gro"
+    local lig_itp="$INITIAL_DIR/$BASE_LIG/$PROT/$LIG/ligando.itp"
 
     # Verificar que el .gro contiene residuo LIG
     if ! grep -q 'LIG' "$lig_gro"; then
@@ -1120,15 +1128,15 @@ setup_initial_files() {
     cp "$INITIAL_DIR/$BASE_PROT/$PROT/topol.top" .
     cp "$INITIAL_DIR/$BASE_PROT/$PROT/posre.itp" .
 
-    # Ligando - copiar todos los archivos disponibles
+    # Ligando - copiar todos los archivos disponibles (nueva estructura: ligandos/<prot>/<lig>/)
     for f in ligando.itp ligando.gro ligando.pdb; do
-        if [ -f "$INITIAL_DIR/$BASE_LIG/$LIG/$f" ]; then
-            cp "$INITIAL_DIR/$BASE_LIG/$LIG/$f" .
+        if [ -f "$INITIAL_DIR/$BASE_LIG/$PROT/$LIG/$f" ]; then
+            cp "$INITIAL_DIR/$BASE_LIG/$PROT/$LIG/$f" .
         fi
     done
 
-    if [ -f "$INITIAL_DIR/$BASE_LIG/$LIG/ligando.prm" ]; then
-        cp "$INITIAL_DIR/$BASE_LIG/$LIG/ligando.prm" .
+    if [ -f "$INITIAL_DIR/$BASE_LIG/$PROT/$LIG/ligando.prm" ]; then
+        cp "$INITIAL_DIR/$BASE_LIG/$PROT/$LIG/ligando.prm" .
         log_success "Archivo ligando.prm encontrado (parámetros CHARMM)"
     fi
 
