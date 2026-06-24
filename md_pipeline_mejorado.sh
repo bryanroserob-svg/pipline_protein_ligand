@@ -1701,8 +1701,8 @@ run_production() {
         # --- TPR RERUN: con energygrps = Protein LIG (para post-producción) ---
         local md_rerun_mdp="md_rerun_temp.mdp"
         cp "$md_mdp" "$md_rerun_mdp"
-        printf '\n; GRUPOS DE ENERGÍA (rerun post-producción, no afecta velocidad GPU)\nenerygrps_placeholder\n' >> "$md_rerun_mdp"
-        sed -i 's/^enerygrps_placeholder/energygrps               = Protein LIG/' "$md_rerun_mdp"
+        printf '\n; GRUPOS DE ENERGÍA (rerun post-producción, no afecta velocidad GPU)\nenergygrps_placeholder\n' >> "$md_rerun_mdp"
+        sed -i 's/^energygrps_placeholder/energygrps               = Protein LIG/' "$md_rerun_mdp"
         run_gmx grompp -f "$md_rerun_mdp" -c npt.gro -t npt.cpt -p topol.top \
             -n index.ndx -o md_rerun.tpr -maxwarn "$MAXWARN" &>"$RUNDIR/logs/grompp_md_rerun.log"
         grep -i 'WARNING' "$RUNDIR/logs/grompp_md_rerun.log" | head -5 | while read -r w; do log_warning "grompp-rerun: $w"; done || true
@@ -1947,7 +1947,7 @@ run_analysis() {
     cd "$RUNDIR/04_analysis" || exit 1
 
     # Copiar archivos de producción (cp en vez de ln: symlinks no funcionan en NTFS/WSL)
-    for f in md.tpr md.xtc md.edr; do
+    for f in md.tpr md.xtc md.edr md_rerun.edr; do
         [ -f "../03_production/$f" ] && cp -f "../03_production/$f" .
     done
     cp -f ../00_setup/index.ndx .
