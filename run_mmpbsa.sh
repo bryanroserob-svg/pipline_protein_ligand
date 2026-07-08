@@ -32,6 +32,7 @@ INPUT_ENTROPY=false
 INPUT_SKIP_RECENTER=false
 INPUT_START_TIME=""
 INPUT_END_TIME=""
+INPUT_CONTRIB_DIST=6
 NON_INTERACTIVE=false
 
 #==========================================
@@ -79,6 +80,7 @@ Opciones (modo no interactivo):
   --start-time NS       Tiempo inicial en ns para análisis (v4.5)
   --end-time NS         Tiempo final en ns para análisis (v4.5)
   --skip-recenter       Omitir re-centrado PBC (si ya está centrada) (v4.5)
+  --contrib-dist Å      Distancia de contribuciones para descomposición en Å (default: 6)
   --help, -h            Mostrar esta ayuda
 
 Ejemplos v4.5:
@@ -128,6 +130,9 @@ parse_mmpbsa_args() {
             --end-time)
                 [ -n "${2:-}" ] || { log_error "Falta valor para --end-time"; exit 1; }
                 INPUT_END_TIME="$2"; shift 2 ;;
+            --contrib-dist)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --contrib-dist"; exit 1; }
+                INPUT_CONTRIB_DIST="$2"; shift 2 ;;
             --help|-h)
                 print_mmpbsa_usage; exit 0 ;;
             *)
@@ -588,10 +593,10 @@ EOF
         cat >> "$mmpbsa_in" <<EOF
 &decomp
 idecomp=2, dec_verbose=3,
-print_res="within 10"
+print_res="within ${INPUT_CONTRIB_DIST}"
 /
 EOF
-        log_success "Sección de descomposición añadida (residuos dentro de 10 Å)"
+        log_success "Sección de descomposición añadida (residuos dentro de ${INPUT_CONTRIB_DIST} Å)"
     fi
 
     # Sección entropía (Normal Mode Analysis)
