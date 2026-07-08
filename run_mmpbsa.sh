@@ -547,7 +547,10 @@ sys_name="MMPBSA_$(basename "$RUNDIR")",
 startframe=1,
 endframe=9999999,
 interval=$FRAME_INTERVAL,
-forcefields="leaprc.gaff2"
+forcefields="leaprc.gaff2",
+temperature=298.15,
+PBRadii=3,
+keep_files=2,
 /
 EOF
 
@@ -565,12 +568,19 @@ EOF
     if [[ "$CALC_TYPE" == *"pb"* ]]; then
         cat >> "$mmpbsa_in" <<EOF
 &pb
-istrng=$SALT_CONC, fillratio=4.0,
+istrng=$SALT_CONC,
+indi=2.0,
+exdi=80.0,
+ipb=2,
 inp=1,
 radiopt=0,
+fillratio=4.0,
+scale=2.0,
+linit=1000,
+prbrad=1.4,
 /
 EOF
-        log_success "Sección PB añadida (istrng=$SALT_CONC)"
+        log_success "Sección PB añadida (istrng=$SALT_CONC, ipb=2, inp=1)"
     fi
 
     # Sección descomposición por residuo
@@ -603,6 +613,38 @@ EOF
 }
 
 #==========================================
+# DETECTAR MODO DE EJECUCIÓN (MPI o serie)
+#==========================================
+detect_mpi_mode() {
+    # Prioridad de CPUs: SLURM > nproc > 1
+    local ncpus
+    if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then
+        ncpus="$SLURM_CPUS_PER_TASK"
+        log_info "CPUs detectados desde SLURM: $ncpus"
+    else
+        ncpus=$(nproc 2>/dev/null || echo 1)
+        log_info "CPUs detectados desde nproc: $ncpus"
+    fi
+
+    # Verificar disponibilidad de mpirun y mpi4py
+    if command -v mpirun &>/dev/null && \
+       python3 -c "from mpi4py import MPI" &>/dev/null 2>&1; then
+        log_success "MPI disponible (mpirun + mpi4py) — usando $ncpus procesos"
+        MMPBSA_USE_MPI=true
+        MMPBSA_NCPUS="$ncpus"
+    else
+        log_warning "MPI no disponible (mpirun o mpi4py ausentes) — modo serie"
+        if ! command -v mpirun &>/dev/null; then
+            log_info "  Motivo: mpirun no encontrado en PATH"
+        else
+            log_info "  Motivo: mpi4py no instalado (conda install -c conda-forge mpi4py)"
+        fi
+        MMPBSA_USE_MPI=false
+        MMPBSA_NCPUS=1
+    fi
+}
+
+#==========================================
 # EJECUTAR gmx_MMPBSA
 #==========================================
 run_mmpbsa() {
@@ -610,24 +652,39 @@ run_mmpbsa() {
 
     cd "$MMPBSA_DIR" || exit 1
 
+    # Detectar modo MPI
+    detect_mpi_mode
+
     local start_time
     start_time=$(date +%s)
 
     echo -e "${YELLOW}Esto puede tardar desde minutos hasta horas según el cálculo...${NC}"
     echo -e "${YELLOW}Progreso detallado en: $MMPBSA_DIR/gmx_mmpbsa.log${NC}\n"
 
-    gmx_MMPBSA -O \
-        -i mmpbsa.in \
-        -cs "$RUNDIR/03_production/md.tpr" \
-        -ci "$RUNDIR/00_setup/index.ndx" \
-        -cg "$GRP_RECEPTOR" "$GRP_LIGAND" \
-        -ct "$TRAJ_CENTERED" \
-        -cp "$RUNDIR/00_setup/topol.top" \
-        -o FINAL_RESULTS_MMPBSA.dat \
-        -eo FINAL_RESULTS_MMPBSA.csv \
-        -do FINAL_DECOMP_MMPBSA.dat \
-        -deo FINAL_DECOMP_MMPBSA.csv \
-        > gmx_mmpbsa.log 2>&1
+    # Argumentos comunes
+    local mmpbsa_args=(
+        -O
+        -i mmpbsa.in
+        -cs "$RUNDIR/03_production/md.tpr"
+        -ci "$RUNDIR/00_setup/index.ndx"
+        -cg "$GRP_RECEPTOR" "$GRP_LIGAND"
+        -ct "$TRAJ_CENTERED"
+        -cp "$RUNDIR/00_setup/topol.top"
+        -o FINAL_RESULTS_MMPBSA.dat
+        -eo FINAL_RESULTS_MMPBSA.csv
+        -do FINAL_DECOMP_MMPBSA.dat
+        -deo FINAL_DECOMP_MMPBSA.csv
+    )
+
+    if [ "$MMPBSA_USE_MPI" = true ]; then
+        log_info "Lanzando con MPI: mpirun -np $MMPBSA_NCPUS gmx_MMPBSA MPI"
+        mpirun -np "$MMPBSA_NCPUS" gmx_MMPBSA MPI "${mmpbsa_args[@]}" \
+            > gmx_mmpbsa.log 2>&1
+    else
+        log_info "Lanzando en modo serie (1 proceso)"
+        gmx_MMPBSA "${mmpbsa_args[@]}" \
+            > gmx_mmpbsa.log 2>&1
+    fi
 
     local end_time
     end_time=$(date +%s)
@@ -635,7 +692,11 @@ run_mmpbsa() {
     local minutes=$(( elapsed / 60 ))
     local seconds=$(( elapsed % 60 ))
 
-    log_success "gmx_MMPBSA completado en ${minutes}m ${seconds}s"
+    if [ "$MMPBSA_USE_MPI" = true ]; then
+        log_success "gmx_MMPBSA (MPI x${MMPBSA_NCPUS}) completado en ${minutes}m ${seconds}s"
+    else
+        log_success "gmx_MMPBSA (serie) completado en ${minutes}m ${seconds}s"
+    fi
 }
 
 #==========================================
