@@ -679,6 +679,7 @@ run_mmpbsa() {
         -eo FINAL_RESULTS_MMPBSA.csv
         -do FINAL_DECOMP_MMPBSA.dat
         -deo FINAL_DECOMP_MMPBSA.csv
+        -nogui
     )
 
     if [ "$MMPBSA_USE_MPI" = true ]; then
