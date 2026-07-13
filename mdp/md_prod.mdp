@@ -44,13 +44,13 @@ rvdw                     = 1.2
 DispCorr                 = no
 
 ; CONTROL DE TEMPERATURA
-tcoupl                   = nose-hoover
+tcoupl                   = V-rescale
 tc-grps                  = Protein_Ligand Solvent
 tau_t                    = 1.0     1.0
 ref_t                    = 300     300
 
 ; CONTROL DE PRESIÓN
-pcoupl                   = Parrinello-Rahman
+pcoupl                   = C-rescale
 pcoupltype               = isotropic
 tau_p                    = 5.0
 ref_p                    = 1.0
