@@ -1,0 +1,35 @@
+
+[ bondtypes ]
+;      i        j  func           b0           kb
+
+
+[ angletypes ]
+;      i        j        k  func       theta0       ktheta          ub0          kub
+  CG2DC1   CG2DC2   CG2R61     5   122.960000   390.450880   0.00000000         0.00
+  CG2DC1    CG321   CG2R61     5   108.040000   321.080160   0.00000000         0.00
+
+
+[ dihedraltypes ]
+;      i        j        k        l  func         phi0         kphi  mult
+  CG2DC1   CG2DC1   CG2DC2   CG2R61     9   180.000000     2.092000     1
+  CG2DC1   CG2DC1   CG2DC2   CG2R61     9     0.000000     8.368000     2
+  CG2DC1   CG2DC1   CG2DC2   CG2R61     9     0.000000     4.184000     3
+    HGA4   CG2DC1   CG2DC2   CG2R61     9   180.000000     7.326602     2
+  CG2DC1   CG2DC1    CG321   CG2R61     9   180.000000     0.000000     3
+  CG2R51   CG2DC1    CG321   CG2R61     9   180.000000     0.000000     2
+  CG2R51   CG2DC1    CG321   CG2R61     9     0.000000    11.757040     3
+  CG2DC1   CG2DC2   CG2R61   CG2R61     9   180.000000     4.393200     2
+  CG2DC1   CG2DC2   CG2R61   CG2R61     9   180.000000     0.292880     4
+  CG2DC1   CG2DC2   CG2R61   NG2R61     9   180.000000    11.296800     2
+  CG2DC1   CG2DC2   CG2R61   NG2R61     9   180.000000     0.962320     4
+  CG2DC1   CG2R51   CG2R51   SG2R50     9     0.000000     1.464400     2
+   CG321   CG2R61   CG2R61   NG2R61     9   180.000000    19.037200     2
+  CG2R61   CG2R61    CG321   CG2DC1     9     0.000000     0.167360     2
+  CG2R61   CG2R61    CG321   CG2DC1     9   180.000000     1.464400     6
+  CG2DC2   CG2R61   NG2R61   CG2R64     9   180.000000     5.104480     2
+   NG2S3   CG2R64   NG2R61   CG2R61     9   180.000000    16.736000     2
+
+
+[ dihedraltypes ]
+; 'improper' dihedrals 
+;      i        j        k        l  func         phi0         kphi
