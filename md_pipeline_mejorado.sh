@@ -300,7 +300,7 @@ parse_checkpoint_file() {
             WATER_MODEL) WATER_MODEL="$value" ;;
             WATER_FILE) WATER_FILE="$value" ;;
             PROD_NS)
-                if ! is_int "$value"; then
+                if ! is_positive_float "$value"; then
                     log_error "PROD_NS inválido en checkpoint: $value"
                     return 1
                 fi
