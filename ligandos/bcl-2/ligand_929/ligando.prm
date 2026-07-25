@@ -1,0 +1,38 @@
+
+[ bondtypes ]
+;      i        j  func           b0           kb
+
+
+[ angletypes ]
+;      i        j        k  func       theta0       ktheta          ub0          kub
+  CG2R61    CG301    CG322     5   107.500000   433.462400   0.00000000         0.00
+  CG2R61   CG3C31    NG3P2     5    99.640000   373.463840   0.00000000         0.00
+   CG324    NG3P2   CG3C31     5   107.040000   269.533280   0.00000000         0.00
+
+
+[ dihedraltypes ]
+;      i        j        k        l  func         phi0         kphi  mult
+  CG2R61   CG2R61    CG301    CG322     9   180.000000     0.962320     2
+  CG2R61   CG2R61   CG3C31    NG3P2     9   180.000000     1.506240     2
+  CG2R61   CG2R61   CG3C31    NG3P2     9     0.000000     1.129680     6
+  CG2R61    CG301    CG322     FGA1     9     0.000000    11.087600     3
+  CG2R61    CG301    CG322     HGA6     9   180.000000     6.401520     2
+  CG2R61    CG301    CG322     HGA6     9     0.000000     0.083680     3
+   CG324    CG311    CG311    NG2S1     9     0.000000     0.836800     3
+   CG311    CG311    CG321   CG2R61     9     0.000000     0.167360     3
+   CG311    CG324    NG3P2   CG3C31     9     0.000000     6.945440     3
+    HGA2    CG324    NG3P2   CG3C31     9     0.000000     0.000000     3
+  CG3C31   CG3C31   CG3C31    NG3P2     9     0.000000     0.251040     2
+  CG3C31   CG3C31   CG3C31    NG3P2     9   180.000000     5.941280     6
+   NG3P2   CG3C31   CG3C31     HGA2     9   180.000000     0.000000     5
+  CG2R61   CG3C31    NG3P2    CG324     9     0.000000     7.740400     1
+  CG2R61   CG3C31    NG3P2    CG324     9   180.000000     1.213360     3
+  CG2R61   CG3C31    NG3P2     HGP2     9     0.000000     0.962320     3
+  CG3C31   CG3C31    NG3P2    CG324     9   180.000000    13.849040     1
+  CG3C31   CG3C31    NG3P2    CG324     9   180.000000     3.138000     3
+  CG3C31   CG3C31    NG3P2    CG324     9   180.000000     1.589920     6
+
+
+[ dihedraltypes ]
+; 'improper' dihedrals 
+;      i        j        k        l  func         phi0         kphi

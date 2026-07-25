@@ -1,0 +1,40 @@
+
+[ bondtypes ]
+;      i        j  func           b0           kb
+
+
+[ angletypes ]
+;      i        j        k  func       theta0       ktheta          ub0          kub
+   CG2D1    CG321    OG301     5    99.000000   167.360000   0.00000000         0.00
+  CG2R61    NG301    SG3O2     5   115.000000   292.880000   0.00000000         0.00
+   CG331    NG301    SG3O2     5   111.000000   292.880000   0.00000000         0.00
+
+
+[ dihedraltypes ]
+;      i        j        k        l  func         phi0         kphi  mult
+   CG2D1    CG2D1    CG321    OG301     9   180.000000     5.062640     1
+   CG2D1    CG2D1    CG321    OG301     9     0.000000     0.083680     2
+   CG2D1    CG2D1    CG321    OG301     9     0.000000     1.213360     3
+   CG2D1    CG2D1    CG321    OG301     9   180.000000     0.543920     6
+    HGA4    CG2D1    CG321    OG301     9     0.000000     1.171520     3
+    HGA4    CG2D1    CG321    OG301     9     0.000000     6.024960     6
+  CG2R61   CG2R61    NG301    SG3O2     9   180.000000     0.836800     2
+   CG324    CG311    CG311    NG2S1     9     0.000000     0.836800     3
+   CG311    CG311    CG321    OG301     9   180.000000     0.836800     3
+   NG2S1    CG311    CG321    OG301     9   180.000000     7.531200     1
+   CG2D1    CG321    CG321    NG2S1     9   180.000000     4.602400     2
+   CG2D1    CG321    CG321    NG2S1     9   180.000000     0.502080     3
+   CG2D1    CG321    OG301    CG321     9   180.000000     2.133840     2
+   CG2D1    CG321    OG301    CG321     9   180.000000     4.100320     3
+    HGA3    CG331    NG301    SG3O2     9     0.000000     0.418400     3
+  CG2R61    NG301    SG3O2    CG331     9     0.000000     9.204800     2
+  CG2R61    NG301    SG3O2    CG331     9     0.000000     0.836800     3
+  CG2R61    NG301    SG3O2    OG2P1     9     0.000000     0.836800     3
+   CG331    NG301    SG3O2    CG331     9     0.000000     8.368000     2
+   CG331    NG301    SG3O2    CG331     9     0.000000     1.255200     3
+   CG331    NG301    SG3O2    OG2P1     9     0.000000     0.836800     3
+
+
+[ dihedraltypes ]
+; 'improper' dihedrals 
+;      i        j        k        l  func         phi0         kphi
