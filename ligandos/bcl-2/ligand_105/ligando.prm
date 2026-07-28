@@ -1,0 +1,59 @@
+
+[ bondtypes ]
+;      i        j  func           b0           kb
+
+
+[ angletypes ]
+;      i        j        k  func       theta0       ktheta          ub0          kub
+  CG2R61   CG3C50   CG3C54     5   117.100000   441.412000   0.00000000         0.00
+   CG2O1   CG3C51   CG3C54     5    92.880000   381.246080   0.00000000         0.00
+
+
+[ dihedraltypes ]
+;      i        j        k        l  func         phi0         kphi  mult
+   NG2S0    CG2O1   CG3C51   CG3C50     9     0.000000     1.673600     1
+   NG2S0    CG2O1   CG3C51   CG3C50     9     0.000000     2.510400     2
+   NG2S0    CG2O1   CG3C51   CG3C54     9   180.000000     2.343040     1
+   NG2S0    CG2O1   CG3C51   CG3C54     9     0.000000     2.510400     2
+   NG2S0    CG2O1   CG3C51   CG3C54     9     0.000000     4.686080     3
+   OG2D1    CG2O1   CG3C51   CG3C54     9     0.000000     1.129680     1
+   OG2D1    CG2O1   CG3C51   CG3C54     9     0.000000     4.853440     2
+   OG2D1    CG2O1   CG3C51   CG3C54     9     0.000000     0.292880     3
+  CG3C51    CG2O1    NG2S0    CG311     9     0.000000     0.836800     2
+  CG3C51    CG2O1    NG2S0    CG321     9     0.000000     0.836800     2
+   CG321   CG2R61   CG2R61   CG3C50     9   180.000000     8.619040     2
+  CG2R61   CG2R61   CG3C50   CG3C54     9     0.000000     1.673600     2
+  CG2R61    CG311    CG321    CG311     9     0.000000     0.167360     3
+   NG2S0    CG311    CG321    CG311     9     0.000000     0.836800     3
+  CG2R61    CG311    NG2S0    CG2O1     9     0.000000     6.819920     1
+  CG2R61    CG311    NG2S0    CG2O1     9     0.000000     0.083680     2
+  CG2R61    CG311    NG2S0    CG2O1     9     0.000000     1.213360     3
+  CG2R61    CG311    NG2S0    CG2O1     9   180.000000     2.008320     4
+  CG2R61    CG311    NG2S0    CG2O1     9     0.000000     0.460240     6
+  CG2R61    CG311    NG2S0    CG321     9     0.000000     0.627600     1
+  CG2R61    CG311    NG2S0    CG321     9     0.000000     1.087840     2
+   CG311    CG321    CG321    NG2S0     9     0.000000     0.836800     3
+   CG321    CG321   CG3C50   CG2R61     9   180.000000     1.506240     4
+   CG321    CG321   CG3C50   CG3C51     9   180.000000     1.506240     3
+   CG321    CG321   CG3C50   CG3C51     9     0.000000     7.698560     4
+  CG2R61   CG3C50   CG3C51    CG2O1     9     0.000000     3.054320     3
+  CG2R61   CG3C50   CG3C51    CG2O1     9   180.000000     2.510400     4
+  CG2R61   CG3C50   CG3C51   CG3C54     9   180.000000     1.506240     3
+  CG2R61   CG3C50   CG3C51   CG3C54     9     0.000000     4.267680     4
+   CG321   CG3C50   CG3C51    CG2O1     9   180.000000     1.380720     3
+   CG321   CG3C50   CG3C51    CG2O1     9   180.000000     0.083680     6
+   CG321   CG3C50   CG3C51   CG3C54     9   180.000000     0.083680     3
+  CG3C54   CG3C50   CG3C51    CG2O1     9   180.000000     3.096160     3
+  CG3C54   CG3C50   CG3C51    CG2O1     9     0.000000     1.004160     4
+  CG2R61   CG3C50   CG3C54    NG3P2     9     0.000000    24.099840     3
+  CG2R61   CG3C50   CG3C54    NG3P2     9   180.000000     6.903600     6
+  CG2R61   CG3C50   CG3C54     HGA2     9     0.000000     0.000000     3
+   CG321   CG3C50   CG3C54    NG3P2     9     0.000000     0.000000     3
+   CG2O1   CG3C51   CG3C54    NG3P2     9     0.000000     0.125520     2
+   CG2O1   CG3C51   CG3C54    NG3P2     9   180.000000     5.439200     3
+   CG2O1   CG3C51   CG3C54     HGA2     9     0.000000     0.585760     3
+
+
+[ dihedraltypes ]
+; 'improper' dihedrals 
+;      i        j        k        l  func         phi0         kphi

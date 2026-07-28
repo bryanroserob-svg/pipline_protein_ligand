@@ -1,0 +1,48 @@
+
+[ bondtypes ]
+;      i        j  func           b0           kb
+  CG2DC2    CLGA1     1   0.17400000    292880.00
+
+
+[ angletypes ]
+;      i        j        k  func       theta0       ktheta          ub0          kub
+   NG311   CG2D1O    NG321     5   127.910000   650.528320   0.00000000         0.00
+  CG2DC2   CG2DC2    CLGA1     5   123.500000   401.664000   0.00000000         0.00
+   CG311   CG2DC2    CLGA1     5   123.500000   401.664000   0.00000000         0.00
+  CG2DC1    CG311   CG2DC2     5   114.000000   251.040000   0.00000000         0.00
+
+
+[ dihedraltypes ]
+;      i        j        k        l  func         phi0         kphi  mult
+   NG311   CG2D1O   CG2DC1   CG2DC2     9   180.000000     2.845120     2
+   NG321   CG2D1O   CG2DC1    CG321     9   180.000000    10.460000     2
+   NG321   CG2D1O    NG311    CG311     9     0.000000     1.380720     2
+   NG321   CG2D1O    NG311    CG311     9   180.000000     1.631760     3
+   NG321   CG2D1O    NG311   HGPAM1     9   180.000000    10.250800     2
+   NG321   CG2D1O    NG311   HGPAM1     9   180.000000     0.418400     6
+   NG311   CG2D1O    NG321   HGPAM2     9   180.000000    10.250800     2
+   NG311   CG2D1O    NG321   HGPAM2     9   180.000000     0.418400     6
+  CG2DC1   CG2DC1    CG311   CG2DC2     9   180.000000     0.000000     3
+  CG2DC2   CG2DC1    CG311   CG2DC2     9     0.000000     4.100320     3
+  CG2DC2   CG2DC1    CG311   CG2DC2     9   180.000000     2.301200     4
+  CG2DC2   CG2DC1    CG311    NG311     9     0.000000     1.255200     3
+  CG2DC2   CG2DC1    CG321    CG311     9     0.000000     1.255200     3
+  CG2DC1   CG2DC2   CG2DC2    CLGA1     9   180.000000     2.343040     1
+  CG2DC1   CG2DC2   CG2DC2    CLGA1     9   180.000000    29.288000     2
+   CLGA1   CG2DC2   CG2DC2     HGA4     9   180.000000    21.756800     2
+  CG2DC1   CG2DC2    CG311    NG311     9     0.000000     1.255200     3
+  CG2DC2   CG2DC2    CG311   CG2DC1     9   180.000000     0.000000     3
+   CLGA1   CG2DC2    CG311   CG2DC1     9   180.000000     0.041840     2
+   CLGA1   CG2DC2    CG311   CG2DC1     9   180.000000     0.000000     3
+   CLGA1   CG2DC2    CG311    NG311     9     0.000000     0.794960     3
+   CLGA1   CG2DC2    CG311     HGA1     9     0.000000     0.794960     3
+  CG2DC2    CG311    NG311   CG2D1O     9   180.000000    28.744080     1
+  CG2DC2    CG311    NG311   CG2D1O     9   180.000000    13.137760     2
+  CG2DC2    CG311    NG311   CG2D1O     9     0.000000     2.301200     3
+   CG301    CG321    CG321    NG2S1     9     0.000000     0.836800     3
+
+
+[ dihedraltypes ]
+; 'improper' dihedrals 
+;      i        j        k        l  func         phi0         kphi
+  CG2D1O   CG2DC1    NG311    NG321     2     0.000000   391.873440
