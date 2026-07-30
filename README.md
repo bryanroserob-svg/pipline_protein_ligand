@@ -1,6 +1,18 @@
-# GROMACS MD Pipeline Automatizado v4.6 (Proteína + Ligando)
+# GROMACS MD Pipeline Automatizado v5.0 (Proteína + Ligando)
 
 Pipeline para simulaciones de dinámica molecular de complejos proteína-ligando con GROMACS.
+
+## Novedades v5.0 — Entropía avanzada en MMPBSA
+
+### `run_mmpbsa.sh`
+- **Interaction Entropy (`--ie`)**: Método rápido de corrección entrópica ([Duan et al., 2016](https://pubs.acs.org/doi/abs/10.1021/jacs.6b02682)). Se configura en `&general` con `interaction_entropy=1`. Segmento configurable con `--ie-segment N` (default 25%).
+- **C2 Entropy (`--c2`)**: Método alternativo de corrección entrópica ([Hsu et al., 2018](https://pubs.acs.org/doi/full/10.1021/acs.jctc.8b00418)). Se configura con `c2_entropy=1` en `&general`.
+- **`PBRadii` dinámico**: Se ajusta automáticamente según el modelo GB (`igb`) seleccionado (igb=1→mbondi, igb=2/5→mbondi2, igb=7→bondi, igb=8→mbondi3).
+- **`forcefields` corregido**: Ahora incluye `leaprc.protein.ff14SB,leaprc.gaff2` por defecto.
+- **Nuevos tipos de cálculo**: `gb_ie`, `gb_decomp_ie`, `gb_c2`, `gb_decomp_c2` para modo no interactivo.
+- **Menú interactivo ampliado**: Opciones 6–9 para IE y C2 Entropy.
+- **Validaciones cruzadas**: Advertencias al combinar IE+NMA o IE+C2 simultáneamente.
+- **Sintaxis `mmpbsa.in` limpia**: Cada variable en su propia línea (nuevo formato recomendado).
 
 ## Novedades v4.6 — Robustez HPC
 
@@ -206,6 +218,15 @@ También se soportan alias:
 
 # MM-PBSA con auto-detección de grupos:
 ./run_mmpbsa.sh --rundir MD_RUN/mi_corrida --calc gb_decomp
+
+# MM-PBSA con Interaction Entropy (nuevo v5.0):
+./run_mmpbsa.sh --rundir MD_RUN/mi_corrida --calc gb_decomp --ie
+
+# MM-PBSA con C2 Entropy (nuevo v5.0):
+./run_mmpbsa.sh --rundir MD_RUN/mi_corrida --calc gb_decomp --c2
+
+# MM-PBSA PB solo con IE (Poisson-Boltzmann + Interaction Entropy):
+./run_mmpbsa.sh --rundir MD_RUN/mi_corrida --calc pb_only --ie
 ```
 
 ## Archivo de configuración (`--config`)
@@ -318,15 +339,65 @@ done
 | `gb_pb` | GB + PB |
 | `gb_decomp` | GB + Descomposición por residuo (recomendado) |
 | `gb_pb_decomp` | GB + PB + Descomposición (análisis completo) |
+| `gb_ie` | GB + Interaction Entropy *(v5.0)* |
+| `gb_decomp_ie` | GB + Descomposición + IE *(v5.0, recomendado con entropía)* |
+| `gb_c2` | GB + C2 Entropy *(v5.0)* |
+| `gb_decomp_c2` | GB + Descomposición + C2 *(v5.0)* |
 
-#### Entropía (nuevo v4.0)
+#### Entropía
+
+Tres métodos de corrección entrópica disponibles:
+
+| Método | Flag | Velocidad | Descripción |
+|--------|------|-----------|-------------|
+| Normal Mode Analysis (NMA) | `--entropy` | 🔴 Lento | Minimización + modos normales. Riguroso pero costoso. |
+| Interaction Entropy (IE) | `--ie` | 🟢 Rápido | Promedio exponencial de energía de interacción. Recomendado para screening. |
+| C2 Entropy | `--c2` | 🟢 Rápido | Aproximación de segundo orden. Alternativa a IE. |
+
+> **Nota sobre IE**: La σIE (desviación estándar de la energía de interacción) debe reportarse siempre. Evitar IE si σIE > ~3.6 kcal/mol.
+
+##### NMA (Normal Mode Analysis)
 
 ```bash
 ./run_mmpbsa.sh \
   --rundir MD_RUN/mi_corrida \
   --calc gb_decomp \
-  --receptor 1 --ligand 13 \
   --entropy
+```
+
+##### Interaction Entropy (IE) — Nuevo v5.0
+
+```bash
+# IE con segmento por defecto (25% final):
+./run_mmpbsa.sh \
+  --rundir MD_RUN/mi_corrida \
+  --calc gb_decomp \
+  --ie
+
+# IE con segmento personalizado (50%):
+./run_mmpbsa.sh \
+  --rundir MD_RUN/mi_corrida \
+  --calc gb_decomp \
+  --ie --ie-segment 50
+
+# Usando calc type compacto:
+./run_mmpbsa.sh \
+  --rundir MD_RUN/mi_corrida \
+  --calc gb_decomp_ie
+```
+
+##### C2 Entropy — Nuevo v5.0
+
+```bash
+./run_mmpbsa.sh \
+  --rundir MD_RUN/mi_corrida \
+  --calc gb_c2
+
+# O combinado con decomp:
+./run_mmpbsa.sh \
+  --rundir MD_RUN/mi_corrida \
+  --calc gb_decomp \
+  --c2
 ```
 
 ## Generación de reportes (`plot_analysis.py`)

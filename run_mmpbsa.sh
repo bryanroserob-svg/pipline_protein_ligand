@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 #==========================================
-# MM-PB(GB)SA ANÁLISIS DE ENERGÍA LIBRE v4.5
+# MM-PB(GB)SA ANÁLISIS DE ENERGÍA LIBRE v5.0
 # Requiere: gmx_MMPBSA, AmberTools, GROMACS
 # Uso: ./run_mmpbsa.sh [directorio_corrida_MD]
 #      ./run_mmpbsa.sh --rundir DIR --calc TYPE [flags]
@@ -29,6 +29,9 @@ INPUT_IGB=""
 INPUT_RECEPTOR=""
 INPUT_LIGAND=""
 INPUT_ENTROPY=false
+INPUT_IE=false
+INPUT_IE_SEGMENT=25
+INPUT_C2=false
 INPUT_SKIP_RECENTER=false
 INPUT_START_TIME=""
 INPUT_END_TIME=""
@@ -70,26 +73,52 @@ Uso:
 
 Opciones (modo no interactivo):
   --rundir DIR          Directorio de la corrida MD
-  --calc TYPE           Tipo: gb_only|pb_only|gb_pb|gb_decomp|gb_pb_decomp
+  --calc TYPE           Tipo de cálculo (ver abajo)
   --interval N          Intervalo de frames (default: 5)
   --salt M              Concentración salina en M (default: 0.150)
   --igb N               Modelo GB: 1|2|5|7|8 (default: 5)
   --receptor IDX        Índice del grupo receptor (auto-detecta si omitido)
   --ligand IDX          Índice del grupo ligando (auto-detecta si omitido)
-  --entropy             Incluir cálculo de entropía (Normal Mode Analysis)
-  --start-time NS       Tiempo inicial en ns para análisis (v4.5)
-  --end-time NS         Tiempo final en ns para análisis (v4.5)
-  --skip-recenter       Omitir re-centrado PBC (si ya está centrada) (v4.5)
+  --entropy             Entropía por Normal Mode Analysis (NMA) — riguroso, lento
+  --ie                  Interaction Entropy (IE) — rápido, en &general (v5.0)
+  --ie-segment N        Segmento final (%) para IE (default: 25)
+  --c2                  C2 Entropy — alternativa rápida a IE (v5.0)
+  --start-time NS       Tiempo inicial en ns para análisis
+  --end-time NS         Tiempo final en ns para análisis
+  --skip-recenter       Omitir re-centrado PBC (si ya está centrada)
   --contrib-dist Å      Distancia de contribuciones para descomposición en Å (default: 6)
   --help, -h            Mostrar esta ayuda
 
-Ejemplos v4.5:
-  # Análisis de los últimos 50 ns solamente:
+Tipos de cálculo (--calc):
+  gb_only        GB solamente
+  pb_only        PB solamente
+  gb_pb          GB + PB
+  gb_decomp      GB + Descomposición por residuo
+  gb_pb_decomp   GB + PB + Descomposición
+  gb_ie          GB + Interaction Entropy  (v5.0)
+  gb_decomp_ie   GB + Descomposición + IE  (v5.0)
+  gb_c2          GB + C2 Entropy           (v5.0)
+  gb_decomp_c2   GB + Descomposición + C2  (v5.0)
+
+Ejemplos v5.0:
+  # Análisis solo últimos 50 ns:
   $0 --rundir MD_RUN/mi_corrida --calc gb_decomp \
     --receptor 1 --ligand 13 --start-time 50 --end-time 100
 
-  # Auto-detección de grupos (sin --receptor/--ligand):
+  # Auto-detección de grupos:
   $0 --rundir MD_RUN/mi_corrida --calc gb_decomp
+
+  # Interaction Entropy (IE):
+  $0 --rundir MD_RUN/mi_corrida --calc gb_decomp --ie
+
+  # IE con segmento personalizado (50%):
+  $0 --rundir MD_RUN/mi_corrida --calc gb_decomp --ie --ie-segment 50
+
+  # C2 Entropy:
+  $0 --rundir MD_RUN/mi_corrida --calc gb_decomp --c2
+
+  # Usando calc type compacto con IE:
+  $0 --rundir MD_RUN/mi_corrida --calc gb_decomp_ie
 
   # Saltar re-centrado:
   $0 --rundir MD_RUN/mi_corrida --calc gb_only --skip-recenter
@@ -122,6 +151,13 @@ parse_mmpbsa_args() {
                 INPUT_LIGAND="$2"; shift 2 ;;
             --entropy)
                 INPUT_ENTROPY=true; shift ;;
+            --ie)
+                INPUT_IE=true; shift ;;
+            --ie-segment)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --ie-segment"; exit 1; }
+                INPUT_IE_SEGMENT="$2"; shift 2 ;;
+            --c2)
+                INPUT_C2=true; shift ;;
             --skip-recenter)
                 INPUT_SKIP_RECENTER=true; shift ;;
             --start-time)
@@ -352,7 +388,21 @@ select_calculation_type() {
     echo "  5) GB + PB + Descomposición por residuo"
     echo "     └─ Análisis completo (más lento, más información)"
     echo ""
-    echo -e "Seleccione el tipo de cálculo [1-5] (default: 4):"
+    echo -e "${CYAN}--- Entropía (v5.0) ---${NC}"
+    echo ""
+    echo "  6) GB + Interaction Entropy (IE)"
+    echo "     └─ Energía libre + corrección entrópica rápida (IE)"
+    echo ""
+    echo "  7) GB + Descomposición + IE"
+    echo "     └─ Análisis completo con Interaction Entropy"
+    echo ""
+    echo "  8) GB + C2 Entropy"
+    echo "     └─ Energía libre + corrección C2 (alternativa a IE)"
+    echo ""
+    echo "  9) GB + Descomposición + C2 Entropy"
+    echo "     └─ Análisis completo con C2"
+    echo ""
+    echo -e "Seleccione el tipo de cálculo [1-9] (default: 4):"
     read -r CALC_CHOICE
     CALC_CHOICE=${CALC_CHOICE:-4}
 
@@ -361,9 +411,26 @@ select_calculation_type() {
         2) CALC_TYPE="pb_only"     ; CALC_DESC="PB solamente" ;;
         3) CALC_TYPE="gb_pb"       ; CALC_DESC="GB + PB" ;;
         5) CALC_TYPE="gb_pb_decomp"; CALC_DESC="GB + PB + Descomposición" ;;
+        6) CALC_TYPE="gb_only"     ; CALC_DESC="GB + Interaction Entropy (IE)"; INPUT_IE=true ;;
+        7) CALC_TYPE="gb_decomp"   ; CALC_DESC="GB + Descomposición + IE"; INPUT_IE=true ;;
+        8) CALC_TYPE="gb_only"     ; CALC_DESC="GB + C2 Entropy"; INPUT_C2=true ;;
+        9) CALC_TYPE="gb_decomp"   ; CALC_DESC="GB + Descomposición + C2 Entropy"; INPUT_C2=true ;;
         *) CALC_TYPE="gb_decomp"   ; CALC_DESC="GB + Descomposición por residuo" ;;
     esac
     log_success "Tipo de cálculo: $CALC_DESC"
+
+    # Si IE activo, preguntar por ie_segment
+    if [ "$INPUT_IE" = true ]; then
+        echo ""
+        echo -e "${CYAN}Segmento para Interaction Entropy (%):${NC}"
+        echo "  25 = último cuartil (recomendado)"
+        echo "  50 = última mitad"
+        echo ""
+        echo "Segmento IE [default: 25]:"
+        read -r IE_SEG_INPUT
+        INPUT_IE_SEGMENT=${IE_SEG_INPUT:-25}
+        log_success "IE segment: ${INPUT_IE_SEGMENT}%"
+    fi
 
     # Intervalo de frames
     echo ""
@@ -541,9 +608,28 @@ generate_mmpbsa_input() {
 
     local mmpbsa_in="$MMPBSA_DIR/mmpbsa.in"
 
-    # Sección general (siempre presente)
+    # Determinar PBRadii según igb (recomendación oficial gmx_MMPBSA)
+    local pbradii=3
+    case "${IGB:-5}" in
+        1) pbradii=2 ;;   # mbondi
+        2|5) pbradii=3 ;; # mbondi2
+        7) pbradii=1 ;;   # bondi
+        8) pbradii=4 ;;   # mbondi3
+    esac
+
+    # Construir opciones de entropía para &general (IE y/o C2)
+    local entropy_general_lines=""
+    if [ "$INPUT_IE" = true ]; then
+        entropy_general_lines="interaction_entropy=1, ie_segment=${INPUT_IE_SEGMENT},"
+    fi
+    if [ "$INPUT_C2" = true ]; then
+        entropy_general_lines="${entropy_general_lines}
+c2_entropy=1,"
+    fi
+
+    # Sección &general (siempre presente)
     cat > "$mmpbsa_in" <<EOF
-# Archivo generado automáticamente por run_mmpbsa.sh
+# Archivo generado automáticamente por run_mmpbsa.sh v5.0
 # Tipo de cálculo: $CALC_DESC
 # Fecha: $(date)
 
@@ -552,62 +638,77 @@ sys_name="MMPBSA_$(basename "$RUNDIR")",
 startframe=1,
 endframe=9999999,
 interval=$FRAME_INTERVAL,
-forcefields="leaprc.gaff2",
+forcefields="leaprc.protein.ff14SB,leaprc.gaff2",
 temperature=298.15,
-PBRadii=3,
+PBRadii=$pbradii,
 keep_files=2,
+${entropy_general_lines}
 /
 EOF
 
-    # Sección GB
+    # Log de parámetros de &general
+    log_success "&general generado (PBRadii=$pbradii, forcefields=ff14SB+gaff2)"
+    if [ "$INPUT_IE" = true ]; then
+        log_success "Interaction Entropy habilitado (ie_segment=${INPUT_IE_SEGMENT}%)"
+    fi
+    if [ "$INPUT_C2" = true ]; then
+        log_success "C2 Entropy habilitado"
+    fi
+
+    # Sección &gb
     if [[ "$CALC_TYPE" == *"gb"* ]]; then
         cat >> "$mmpbsa_in" <<EOF
 &gb
-igb=$IGB, saltcon=$SALT_CONC,
+igb=$IGB
+saltcon=$SALT_CONC
 /
 EOF
-        log_success "Sección GB añadida (igb=$IGB, salt=$SALT_CONC)"
+        log_success "Sección &gb añadida (igb=$IGB, saltcon=$SALT_CONC)"
     fi
 
-    # Sección PB
+    # Sección &pb
     if [[ "$CALC_TYPE" == *"pb"* ]]; then
         cat >> "$mmpbsa_in" <<EOF
 &pb
-istrng=$SALT_CONC,
-indi=2.0,
-exdi=80.0,
-ipb=2,
-inp=1,
-radiopt=0,
-fillratio=4.0,
-scale=2.0,
-linit=1000,
-prbrad=1.4,
+istrng=$SALT_CONC
+indi=1.0
+exdi=80.0
+ipb=2
+inp=2
+radiopt=0
+fillratio=4.0
+scale=2.0
+linit=1000
+prbrad=1.4
 /
 EOF
-        log_success "Sección PB añadida (istrng=$SALT_CONC, ipb=2, inp=1)"
+        log_success "Sección &pb añadida (istrng=$SALT_CONC, ipb=2, inp=2)"
     fi
 
-    # Sección descomposición por residuo
+    # Sección &decomp
     if [[ "$CALC_TYPE" == *"decomp"* ]]; then
         cat >> "$mmpbsa_in" <<EOF
 &decomp
-idecomp=2, dec_verbose=3,
+idecomp=2
+dec_verbose=3
 print_res="within ${INPUT_CONTRIB_DIST}"
 /
 EOF
-        log_success "Sección de descomposición añadida (residuos dentro de ${INPUT_CONTRIB_DIST} Å)"
+        log_success "Sección &decomp añadida (residuos dentro de ${INPUT_CONTRIB_DIST} Å)"
     fi
 
-    # Sección entropía (Normal Mode Analysis)
+    # Sección &nmode — Normal Mode Analysis (solo si --entropy)
     if [ "$INPUT_ENTROPY" = true ]; then
         cat >> "$mmpbsa_in" <<EOF
 &nmode
-nmstartframe=1, nmendframe=100, nminterval=10,
-maxcyc=10000, drms=0.001,
+nmstartframe=1
+nmendframe=100
+nminterval=10
+maxcyc=10000
+drms=0.001
 /
 EOF
-        log_success "Sección de entropía añadida (Normal Mode Analysis)"
+        log_success "Sección &nmode añadida (Normal Mode Analysis)"
     fi
 
     echo ""
@@ -752,6 +853,9 @@ PARÁMETROS:
 $([ "${IGB:-}" ] && echo "- Modelo GB:           igb=$IGB")
 - Grupo receptor:      $GRP_RECEPTOR
 - Grupo ligando:       $GRP_LIGAND
+$([ "$INPUT_IE" = true ] && echo "- Interaction Entropy: ie_segment=${INPUT_IE_SEGMENT}%")
+$([ "$INPUT_C2" = true ] && echo "- C2 Entropy:          habilitado")
+$([ "$INPUT_ENTROPY" = true ] && echo "- NMA Entropy:         habilitado")
 
 ARCHIVOS GENERADOS:
 - FINAL_RESULTS_MMPBSA.dat   : Resultados principales (ΔG_bind)
@@ -961,6 +1065,10 @@ main() {
             gb_pb) CALC_DESC="GB + PB" ;;
             gb_decomp) CALC_DESC="GB + Descomposición por residuo" ;;
             gb_pb_decomp) CALC_DESC="GB + PB + Descomposición" ;;
+            gb_ie) CALC_DESC="GB + Interaction Entropy"; INPUT_IE=true ;;
+            gb_decomp_ie) CALC_DESC="GB + Descomposición + IE"; CALC_TYPE="gb_decomp"; INPUT_IE=true ;;
+            gb_c2) CALC_DESC="GB + C2 Entropy"; INPUT_C2=true ;;
+            gb_decomp_c2) CALC_DESC="GB + Descomposición + C2"; CALC_TYPE="gb_decomp"; INPUT_C2=true ;;
             *) log_error "Tipo de cálculo inválido: $CALC_TYPE"; exit 1 ;;
         esac
 
@@ -1012,6 +1120,16 @@ main() {
     MMPBSA_DIR="$RUNDIR/05_mmpbsa_$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$MMPBSA_DIR"
     log_success "Directorio de trabajo: $MMPBSA_DIR"
+
+    # Validaciones cruzadas de métodos de entropía (v5.0)
+    if [ "$INPUT_IE" = true ] && [ "$INPUT_ENTROPY" = true ]; then
+        log_warning "IE y NMA habilitados simultáneamente — ambos se calcularán."
+        log_info "IE es rápido; NMA es riguroso pero muy costoso en tiempo."
+    fi
+    if [ "$INPUT_IE" = true ] && [ "$INPUT_C2" = true ]; then
+        log_warning "IE y C2 habilitados simultáneamente — ambos se calcularán."
+        log_info "Son métodos complementarios; ambos reportan σIE."
+    fi
 
     generate_mmpbsa_input
     recenter_trajectory
