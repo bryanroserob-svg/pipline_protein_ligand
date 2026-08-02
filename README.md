@@ -227,6 +227,9 @@ También se soportan alias:
 
 # MM-PBSA PB solo con IE (Poisson-Boltzmann + Interaction Entropy):
 ./run_mmpbsa.sh --rundir MD_RUN/mi_corrida --calc pb_only --ie
+
+# MM-PBSA PB con dieléctrica interna 4.0 e inp=1 (nuevo v5.1):
+./run_mmpbsa.sh --rundir MD_RUN/mi_corrida --calc gb_pb_decomp --indi 4.0 --inp 1
 ```
 
 ## Archivo de configuración (`--config`)
@@ -327,7 +330,9 @@ done
   --salt 0.15 \
   --igb 5 \
   --receptor 1 \
-  --ligand 13
+  --ligand 13 \
+  --indi 1.0 \
+  --inp 2
 ```
 
 #### Opciones de cálculo (`--calc`)
@@ -398,6 +403,35 @@ Tres métodos de corrección entrópica disponibles:
   --rundir MD_RUN/mi_corrida \
   --calc gb_decomp \
   --c2
+```
+
+#### Parámetros de Poisson-Boltzmann (`&pb`) — Nuevo v5.1
+
+Cuando el cálculo incluye PB (`pb_only`, `gb_pb`, `gb_pb_decomp`), se pueden ajustar las constantes del solucionador:
+
+| Flag | Parámetro `.in` | Default | Valores | Descripción |
+|------|----------------|---------|---------|-------------|
+| `--indi VALUE` | `indi` | `1.0` | `1.0`, `2.0`, `4.0` | Constante dieléctrica interna del soluto. Corresponde a `epsin` en pbsa. |
+| `--inp VALUE` | `inp` | `2` | `1`, `2` | Método no-polar: `1`=SASA simple, `2`=cavidad+dispersión (más preciso). |
+
+**Valores de `indi` recomendados:**
+- `1.0` — valor físico estándar (vacío), recomendado para la mayoría de casos
+- `2.0` — proteínas rígidas
+- `4.0` — proteínas con alta flexibilidad interna
+
+> **Nota sobre `inp=2`**: A veces produce valores anormalmente altos de energía de solvatación no-polar.
+> En ese caso, usar `--inp 1` como workaround
+> ([ver Q&A oficial](https://valdes-tresanco-ms.github.io/gmx_MMPBSA/dev/Q%26A/calculations/#possible-solutions_2)).
+
+##### Ejemplo: PB con dieléctrica interna modificada
+
+```bash
+# PB completo con indi=4.0 (proteína flexible) e inp=1 (SASA, más robusto):
+./run_mmpbsa.sh \
+  --rundir MD_RUN/mi_corrida \
+  --calc gb_pb_decomp \
+  --indi 4.0 \
+  --inp 1
 ```
 
 ## Generación de reportes (`plot_analysis.py`)

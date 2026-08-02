@@ -36,6 +36,8 @@ INPUT_SKIP_RECENTER=false
 INPUT_START_TIME=""
 INPUT_END_TIME=""
 INPUT_CONTRIB_DIST=6
+INPUT_INDI=""
+INPUT_INP=""
 NON_INTERACTIVE=false
 
 #==========================================
@@ -87,6 +89,9 @@ Opciones (modo no interactivo):
   --end-time NS         Tiempo final en ns para análisis
   --skip-recenter       Omitir re-centrado PBC (si ya está centrada)
   --contrib-dist Å      Distancia de contribuciones para descomposición en Å (default: 6)
+  --indi VALUE          Constante dieléctrica interna del soluto para &pb (default: 1.0)
+                        Valores típicos: 1.0=vacío, 2.0=proteínas rígidas, 4.0=proteínas flexibles
+  --inp VALUE           Método no-polar para &pb: 1=SASA simple, 2=cavidad+dispersión (default: 2)
   --help, -h            Mostrar esta ayuda
 
 Tipos de cálculo (--calc):
@@ -169,6 +174,12 @@ parse_mmpbsa_args() {
             --contrib-dist)
                 [ -n "${2:-}" ] || { log_error "Falta valor para --contrib-dist"; exit 1; }
                 INPUT_CONTRIB_DIST="$2"; shift 2 ;;
+            --indi)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --indi"; exit 1; }
+                INPUT_INDI="$2"; shift 2 ;;
+            --inp)
+                [ -n "${2:-}" ] || { log_error "Falta valor para --inp"; exit 1; }
+                INPUT_INP="$2"; shift 2 ;;
             --help|-h)
                 print_mmpbsa_usage; exit 0 ;;
             *)
@@ -476,6 +487,34 @@ select_calculation_type() {
         esac
         log_success "Modelo GB: igb=$IGB"
     fi
+
+    # Parámetros PB (solo si el cálculo incluye PB)
+    if [[ "$CALC_TYPE" == *"pb"* ]]; then
+        echo ""
+        echo -e "${CYAN}Constante dieléctrica interna del soluto (indi):${NC}"
+        echo "  1.0 = vacío — valor físico estándar (default)"
+        echo "  2.0 = proteínas rígidas"
+        echo "  4.0 = proteínas con alta flexibilidad"
+        echo ""
+        echo "indi [default: 1.0]:"
+        read -r INDI_INPUT
+        INPUT_INDI=${INDI_INPUT:-1.0}
+        log_success "Dieléctrica interna: indi=$INPUT_INDI"
+
+        echo ""
+        echo -e "${CYAN}Método de solvatación no-polar (inp):${NC}"
+        echo "  1) SASA simple — energía proporcional al área accesible al solvente"
+        echo "     └─ Más robusto si se obtienen valores anormalmente altos con inp=2"
+        echo "  2) Cavidad + Dispersión — modelo de dos términos, más preciso (recomendado)"
+        echo ""
+        echo "inp [default: 2]:"
+        read -r INP_INPUT
+        case "${INP_INPUT:-2}" in
+            1) INPUT_INP=1 ;;
+            *) INPUT_INP=2 ;;
+        esac
+        log_success "Método no-polar: inp=$INPUT_INP"
+    fi
 }
 
 #==========================================
@@ -668,13 +707,15 @@ EOF
 
     # Sección &pb
     if [[ "$CALC_TYPE" == *"pb"* ]]; then
+        local pb_indi="${INPUT_INDI:-1.0}"
+        local pb_inp="${INPUT_INP:-2}"
         cat >> "$mmpbsa_in" <<EOF
 &pb
 istrng=$SALT_CONC
-indi=1.0
+indi=$pb_indi
 exdi=80.0
 ipb=2
-inp=2
+inp=$pb_inp
 radiopt=0
 fillratio=4.0
 scale=2.0
@@ -682,7 +723,7 @@ linit=1000
 prbrad=1.4
 /
 EOF
-        log_success "Sección &pb añadida (istrng=$SALT_CONC, ipb=2, inp=2)"
+        log_success "Sección &pb añadida (istrng=$SALT_CONC, indi=$pb_indi, inp=$pb_inp)"
     fi
 
     # Sección &decomp
@@ -851,6 +892,8 @@ PARÁMETROS:
 - Intervalo de frames: $FRAME_INTERVAL
 - Concentración salina: $SALT_CONC M
 $([ "${IGB:-}" ] && echo "- Modelo GB:           igb=$IGB")
+$([ -n "${INPUT_INDI:-}" ] && echo "- Dieléctrica interna: indi=$INPUT_INDI")
+$([ -n "${INPUT_INP:-}" ] && echo "- Método no-polar PB:  inp=$INPUT_INP")
 - Grupo receptor:      $GRP_RECEPTOR
 - Grupo ligando:       $GRP_LIGAND
 $([ "$INPUT_IE" = true ] && echo "- Interaction Entropy: ie_segment=${INPUT_IE_SEGMENT}%")
