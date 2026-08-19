@@ -30,3 +30,7 @@ Thumbs.db
 # Graphify output
 graphify-out/
 graphify.out/
+
+# Directorios generados
+proteinas/*/
+ligandos/*/

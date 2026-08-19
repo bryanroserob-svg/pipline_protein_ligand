@@ -52,7 +52,7 @@ Pipeline para simulaciones de dinámica molecular de complejos proteína-ligando
 
 ## Novedades v4.0
 
-- **Equilibración mejorada**: NVT y NPT ahora usan 1 ns (antes 100 ps)
+- **Equilibración mejorada**: NVT usa 1 ps y NPT usa 1 ns
 - **Fix tau_t**: Eliminada sobreescritura de `tau_t=0.1` que degradaba el muestreo canónico
 - **Auto-detección de threads**: `NT` se detecta automáticamente con `nproc`, o se configura con `--nthreads`
 - **`--maxwarn` configurable**: Controla el máximo de warnings de `grompp` desde CLI
@@ -107,14 +107,15 @@ Automatizacion_proteina_ligando/
 |     |- topol.top
 |     `- posre.itp
 |- ligandos/
-|  `- mi_ligando/
-|     |- ligando.gro
-|     |- ligando.itp
-|     `- ligando.prm   (opcional)
+|  `- mi_proteina/
+|     `- mi_ligando/
+|        |- ligando.gro
+|        |- ligando.itp
+|        `- ligando.prm   (opcional)
 |- mdp/
 |  |- ions.mdp
 |  |- em.mdp
-|  |- nvt.mdp          (1 ns equilibración)
+|  |- nvt.mdp          (1 ps equilibración)
 |  |- npt.mdp          (1 ns equilibración)
 |  `- md_prod.mdp
 `- MD_RUN/             (salida automática)
